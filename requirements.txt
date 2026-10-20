@@ -1,0 +1,8 @@
+# Keep Kaggle's installed matching CUDA torch/torchvision pair when these bounds are met.
+# No CPU wheel index is specified here.
+torch>=2.6
+torchvision>=0.21
+av>=14
+Pillow>=9
+numpy>=1.24
+matplotlib>=3.7
