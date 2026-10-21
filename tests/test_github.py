@@ -18,7 +18,12 @@ class GitHubBootstrapTests(unittest.TestCase):
         sentinel = 'synthetic-secret-never-persist'
         sha = 'a' * 40
         calls, helpers, child_envs = [], [], []
-        client = types.SimpleNamespace(get_secret=lambda name: sentinel)
+        requested_secrets = []
+        def get_secret(name):
+            requested_secrets.append(name)
+            self.assertEqual(name, 'Github Token')
+            return sentinel
+        client = types.SimpleNamespace(get_secret=get_secret)
         module = types.SimpleNamespace(UserSecretsClient=lambda: client)
 
         def fake_run(args, *, env, capture_output, text, timeout):
@@ -54,9 +59,15 @@ class GitHubBootstrapTests(unittest.TestCase):
                 self.assertEqual(result['repository'], REPOSITORY_URL)
                 self.assertNotIn(sentinel, str(result))
         self.assertTrue(helpers)
+        self.assertEqual(requested_secrets, ['Github Token'])
         self.assertTrue(all(not p.exists() for p in helpers))
         self.assertTrue(all('DSA4266_GITHUB_TOKEN' not in env for env in child_envs))
         self.assertNotIn(sentinel, output.getvalue())
+
+    def test_default_secret_name_matches_existing_kaggle_secret(self):
+        import inspect
+        self.assertEqual(inspect.signature(checkout_private_repo).parameters['secret_name'].default,
+                         'Github Token')
 
     def test_token_never_persisted_or_printed(self):
         self.exercise()
@@ -81,6 +92,8 @@ class GitHubBootstrapTests(unittest.TestCase):
         first = next(c['source'] for c in nb['cells'] if c['cell_type'] == 'code')
         self.assertTrue(first.startswith((root/'cnn_experiment/github.py').read_text(encoding='utf-8')))
         self.assertIn('checkout_private_repo(CODE_ROOT, GITHUB_REF)', first)
+        self.assertIn("secret_name='Github Token'", first)
+        self.assertIn("GITHUB_REF = 'main'", first)
         source = '\n'.join(c['source'] for c in nb['cells'])
         self.assertIn("write_json(SESSION/'git_provenance.json', GIT_PROVENANCE)", source)
         self.assertNotIn('CODE_ZIP_OVERRIDE', source)
@@ -89,6 +102,12 @@ class GitHubBootstrapTests(unittest.TestCase):
         self.assertNotIn('RUN_TRAINING =', source)
         self.assertNotIn('RUN_START_DIAGNOSTIC =', source)
         self.assertIn('TEST_APPROVAL = None', source)
+        self.assertIn('USE_PRIVATE_KAGGLE_BACKUP = False', source)
+        self.assertIn("CHECKPOINT_SELECTION = 'frame_pr_auc'", source)
+        self.assertNotIn('DOWNLOAD_CONFIRMATION', source)
+        self.assertIn('pool_path=POOL_PATH',source)
+        self.assertIn('preflight_temporal(',source)
+        self.assertIn('LSTM_CONFIG = TemporalConfig().validate()',source)
         self.assertNotIn('EXPECTED_COMPLETED_EPOCH', source)
         self.assertTrue(all(not c.get('outputs') for c in nb['cells']))
 

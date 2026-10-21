@@ -16,8 +16,12 @@ import torch
 from torch import nn
 from cnn_experiment.data import make_loader, Index, PROTOCOL, write_json, EpochSampler, memory_mib
 from cnn_experiment.models import StagedCNN, make_optimizer
+from .config import checkpoint_score, selection_label
+from .backup import package_model_run
+from .pool import cnn_inputs, cnn_records
 from .evaluation import (binary_metrics, class_loss_metrics, evaluate_predictions,
-    write_history_metrics, plot_history, prediction_artifacts, write_epoch_diagnostics, display_epoch_diagnostics)
+    write_history_metrics, plot_history, prediction_artifacts, write_epoch_diagnostics, display_epoch_diagnostics,
+    write_final_numerics, dev_threshold_analysis)
 from .checkpoints import (load_resume_bundle, restore_training_state, copy_resume_boundary,
     rng_state, restore_rng, digest, atomic_checkpoint)
 
@@ -117,26 +121,26 @@ class RunProgress:
 
 def print_epoch_summary(progress, entry, config, best_epoch):
     train, dev, video = entry['train'], entry['dev'], entry['dev_video']
+    unit='clip' if config.model=='resnet50_lstm' else 'frame'
     def number(value):
         return 'undefined' if value is None else f'{value:.6f}'
     lines = [f"\n{progress.model} | Epoch {entry['epoch']}/{config.epochs} completed (TRAIN + DEV)",
         f"  TRAIN loss {number(train['loss'])} | ROC-AUC {number(train['roc_auc'])} | samples {train['n']}",
-        f"  TRAIN precision/recall/F1 {number(train['precision'])}/{number(train['recall'])}/{number(train['f1'])}",
+        f"  TRAIN PR-AUC {number(train.get('pr_auc'))} | precision/recall/F1/F2 {number(train['precision'])}/{number(train['recall'])}/{number(train['f1'])}/{number(train.get('f2'))}",
         f"  DEV loss {number(dev['loss'])} | balanced {number(dev['balanced_loss'])} | "
         f"real {number(dev['real_class_loss'])} | fake {number(dev['fake_class_loss'])}",
-        f"  DEV frame ROC-AUC {number(dev['roc_auc'])} | video ROC-AUC {number(video['roc_auc'])}",
-        f"  DEV frame precision/recall/F1 {number(dev['precision'])}/{number(dev['recall'])}/{number(dev['f1'])}",
+        f"  DEV {unit} PR-AUC {number(dev.get('pr_auc'))} | {unit} ROC-AUC {number(dev['roc_auc'])} | video ROC-AUC {number(video['roc_auc'])} | video PR-AUC {number(video.get('pr_auc'))}",
+        f"  DEV {unit} precision/recall/F1/F2 {number(dev['precision'])}/{number(dev['recall'])}/{number(dev['f1'])}/{number(dev.get('f2'))}",
         f"  DEV video precision/recall/F1 {number(video['precision'])}/{number(video['recall'])}/{number(video['f1'])}",
         f"  Threshold {config.threshold} | learning rates {entry['learning_rates']} | phase {entry['phase']}",
         f"  Duration {entry['train_seconds']+entry['dev_seconds']:.1f}s (TRAIN {entry['train_seconds']:.1f}s; DEV {entry['dev_seconds']:.1f}s)",
-        f"  Best checkpoint {'IMPROVED' if entry['is_best'] else 'unchanged'} (best epoch {best_epoch}) | "
+        f"  Best checkpoint {'IMPROVED' if entry['is_best'] else 'unchanged'} (best epoch {best_epoch}; {selection_label(config.checkpoint_selection)}) | "
         f"early stopping {entry['stale_epochs']}/{config.patience}",
         '  Saving history and checkpoints now; confirmed paths follow.']
     if 'numerics' in train:
         n = train['numerics']
-        lines.insert(-1, f"  Gradient norm finite mean/max {n['gradient_norm_mean_finite']}/{n['gradient_norm_max_finite']} | "
-                     f"AMP scale {n['amp_scale_start']} -> {n['amp_scale_end']} | "
-                     f"optimizer steps {n['optimizer_steps']} | skipped {n['skipped_steps']}")
+        lines.insert(-1, f"  Optimizer updates {n['optimizer_steps']} | skipped {n['skipped_steps']} "
+                     '(AMP scales and gradient norms saved in numerics.jsonl / history)')
     progress.note('\n'.join(lines))
 
 
@@ -366,8 +370,7 @@ def run_epoch(model, loader, config, optimizer=None, scaler=None, *, progress=No
                     predictions.append({'record_index': i, 'target': y, 'probability': p})
             stage('batch_completed', samples_seen=len(labels))
             if should_log_batch(batch, total, interval):
-                numerical_text = (f" | Grad norm {last_numerics['gradient_norm']} | AMP scale {last_numerics['amp_scale_after']} | "
-                                  f"Skipped steps {gradient_guard.state['epoch_skipped_steps']}" if training else '')
+                numerical_text = (f" | Skipped steps {gradient_guard.state['epoch_skipped_steps']}" if training else '')
                 note(f'{model_label(config.model)} | Epoch {epoch+1}/{config.epochs} | '
                      f'{label}: Batch {batch}/{total} | Loss: {sum(ls)/len(ls):.4f} | '
                      f'Mean loss: {sum(sums.values())/sum(counts.values()):.4f} | '
@@ -394,8 +397,8 @@ def run_epoch(model, loader, config, optimizer=None, scaler=None, *, progress=No
     return metrics, predictions, time.perf_counter() - started
 
 
-def commit_epoch(out, history, entry, payload, improved, records, predictions, report, config, progress):
-    """Show metrics and save resumable state before any plots can fail."""
+def commit_epoch(out, history, entry, payload, improved, records, predictions, report, config, progress, persistent_backup=None):
+    """Commit locally, create a downloadable ZIP; remote backup is opt-in. No plots."""
     print_epoch_summary(progress, entry, config, payload['best_epoch'])
     progress.stage('write_history_metrics', announce=True)
     write_history_metrics(out, history)
@@ -407,28 +410,37 @@ def commit_epoch(out, history, entry, payload, improved, records, predictions, r
     atomic_checkpoint(out/'last.pt', payload)
     progress.note(f'Checkpoint saved: {out/"last.pt"}\n'
                   f'Best checkpoint {"updated" if improved else "retained"}: {out/"best.pt"}')
-    progress.stage('plot_history', announce=True)
-    plot_history(out, history)
     if improved:
         progress.stage('write_best_prediction_artifacts', announce=True)
-        prediction_artifacts(out, records, predictions, report)
-    progress.stage('write_current_epoch_diagnostics', announce=True)
-    paths = write_epoch_diagnostics(out, history, records, predictions, report)
-    display_epoch_diagnostics(paths)
+        prediction_artifacts(out, records, predictions, report, render_plots=False,unit_label='Clip' if config.model=='resnet50_lstm' else 'Frame')
+    progress.stage('create_epoch_download_zip', announce=True)
+    receipt = package_model_run(out, config.model, entry['epoch'], snapshot_lock=progress.lock)
+    progress.note(f'Download ZIP (completed Epoch {entry["epoch"]}): {receipt["archive"]}\n'
+                  f'SHA256 {receipt["sha256"]} | {receipt["bytes"]/2**20:.1f} MiB. Download to Windows before expiry.')
+    if persistent_backup is not None:
+        progress.stage('verify_private_epoch_backup', announce=True)
+        backup_rng = rng_state()
+        try:
+            persistent_backup.save_run(out, config, entry['epoch'], snapshot_lock=progress.lock)
+        finally:
+            restore_rng(backup_rng)
     progress.stage('epoch_artifacts_completed', announce=True)
 
 
-def train(config, index_path, data_root, weights_root, output, resume_from=None):
-    config.validate(); require_cuda()
+def train(config, index_path, data_root, weights_root, output, resume_from=None, *, persistent_backup=None, pool_path=None):
+    config.validate()
+    if persistent_backup is not None:
+        persistent_backup.require_ready(config, digest(index_path))
+    require_cuda()
     out = Path(output)
     if out.exists():
         raise FileExistsError(f'Existing run preserved: {out}. Choose a new versioned run; use explicit resume_from.')
     out.mkdir(parents=True)
     with RunProgress(out, config.model, config.heartbeat_seconds) as progress:
-        return _train(config, index_path, data_root, weights_root, out, resume_from, progress)
+        return _train(config, index_path, data_root, weights_root, out, resume_from, progress, persistent_backup, pool_path)
 
 
-def _train(config, index_path, data_root, weights_root, out, resume_from, progress):
+def _train(config, index_path, data_root, weights_root, out, resume_from, progress, persistent_backup, pool_path=None):
     progress.stage('seed_and_environment', announce=True)
     seed_everything(config.seed)
     environment = {'logging_version': LOGGING_VERSION, 'pid': os.getpid(), 'torch': str(torch.__version__),
@@ -439,15 +451,38 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         'shared_memory_free_mib': shutil.disk_usage('/dev/shm').free/2**20 if Path('/dev/shm').exists() else None}
     write_json(out/'runtime_environment.json', environment)
     progress.stage('load_candidate_index', announce=True)
-    index = Index(index_path, data_root)
+    temporal=config.model=='resnet50_lstm'
+    protocol=PROTOCOL;kind='frame';feature_source=None
+    if temporal:
+        from .temporal import ClipIndex, ClipPool, trained_resnet, TEMPORAL_PROTOCOL
+        from .pool import FixedPoolSampler
+        index=ClipIndex(index_path,data_root);pool=None;protocol=TEMPORAL_PROTOCOL;kind='clip'
+        sampler=FixedPoolSampler(ClipPool(index),config.clip_per_class,config.seed)
+    else:
+        index, sampler, pool = cnn_inputs(config, index_path, data_root, pool_path)
     index_hash = digest(index_path)
-    sampler = EpochSampler(index, per_class=config.train_per_class, seed=config.seed)
-    dev_records = index.records('dev', 'frame')
+    pool_hash = pool.sha256 if pool is not None else None
+    if pool is not None:
+        shutil.copy2(pool.path, out/'train_pool.json')
+    if persistent_backup is not None:
+        persistent_backup.require_ready(config, index_hash)
+    plan_path = out.parent/'experiment_plans.json'
+    if plan_path.is_file():
+        write_json(out/'experiment_plan.json', json.loads(plan_path.read_text())[config.model])
+    if temporal:
+        shutil.copy2(index_path,out/'clip_manifest.json')
+    dev_records = index.records('dev', kind)
     progress.stage('initialize_dev_loader', announce=True)
     dev_loader = make_loader(dev_records, data_root, config)
     progress.stage('initialize_cuda_model_optimizer', announce=True)
-    model = StagedCNN(config, weights_root, pretrained=resume_from is None).cuda()
-    optimizer = make_optimizer(model, config)
+    if temporal:
+        model,feature_source=trained_resnet(config,weights_root)
+        model=model.cuda();write_json(out/'feature_source.json',feature_source)
+        optimizer=torch.optim.AdamW([{'name':'temporal_head','params':[p for p in model.parameters() if p.requires_grad],
+            'lr':config.head_lr}],weight_decay=config.weight_decay)
+    else:
+        model = StagedCNN(config, weights_root, pretrained=resume_from is None).cuda()
+        optimizer = make_optimizer(model, config)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=.5, patience=config.scheduler_patience)
     scaler = torch.amp.GradScaler('cuda', enabled=config.amp)
     history = []; start = 0; best = -1.; stale = 0; best_epoch = 0; best_balanced = None
@@ -456,8 +491,10 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
     inactive_amp_scaler_state = {}
     if resume_from is not None:
         progress.stage('validate_and_restore_checkpoint', announce=True)
-        bundle = load_resume_bundle(resume_from, config, index_hash)
+        bundle = load_resume_bundle(resume_from, config, index_hash, pool_hash=pool_hash,protocol=protocol)
         state = bundle['state']
+        if temporal and state.get('feature_source')!=feature_source:
+            raise ValueError('Temporal resume requires the identical selected trained CNN and feature configuration')
         start = state['epoch'] + 1; best = state['best']; stale = state['stale']
         history = state['history']; best_epoch = state['best_epoch']; best_balanced = state['best_balanced_dev_loss']
         restore_training_state(bundle, model, optimizer, scheduler, scaler, sampler)
@@ -474,8 +511,9 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
                       f'Boundary checkpoints copied to {out}; source checkpoints preserved.')
         status = 'resumed'
         del state, bundle
-    write_json(out / 'config.json', config.as_dict() | {'protocol': PROTOCOL, 'index_sha256': index_hash,
-        'selection_metric': 'DEV video ROC-AUC, fixed Top-5%', 'threshold_policy': f'fixed {config.threshold}; no tuning',
+    write_json(out / 'config.json', config.as_dict() | {'protocol': protocol, 'index_sha256': index_hash, 'pool_sha256':pool_hash,
+        'selection_metric': selection_label(config.checkpoint_selection), 'threshold_policy': f'epoch/full-DEV metrics at {config.threshold}; separate final DEV family-calibrated F2 analysis',
+        'scheduler_monitor': 'DEV clip PR-AUC' if temporal else 'DEV video ROC-AUC (unchanged)',
         'torch': str(torch.__version__), 'gpu': torch.cuda.get_device_name(0),
         'start_mode': 'resumed' if resume_from else 'fresh',
         'resume_from': str(resume_from) if resume_from else None, 'logging_version': LOGGING_VERSION,
@@ -492,10 +530,10 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         write_json(out / f"trainable_{model.phase}.json", phase)
         ids, diagnostic = sampler.select(epoch)
         write_json(out / f'sampling_epoch_{epoch+1:03}.json', diagnostic | {'candidate_ids': ids})
-        phase_label = 'Head warm-up' if epoch < config.warmup_epochs else ('Final-stage fine-tuning' if model.phase == 'final_stage' else 'Head-only training')
+        phase_label = 'Frozen ResNet50 + temporal head' if temporal else ('Head warm-up' if epoch < config.warmup_epochs else ('Final-stage fine-tuning' if model.phase == 'final_stage' else 'Head-only training'))
         progress.note(f'\n{progress.model} | Epoch {epoch+1}/{config.epochs} | {phase_label}')
         progress.stage('materialize_selected_records', announce=True)
-        records = index.records('train', 'frame', ids)
+        records = index.records('train','clip',ids) if temporal else cnn_records(index, pool, ids)
         progress.stage('initialize_train_loader', announce=True)
         loader = make_loader(records, data_root, config, training=True, epoch=epoch)
         lrs = {g['name']: g['lr'] for g in optimizer.param_groups}
@@ -504,34 +542,34 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         del loader, records
         dev_metrics, predictions, dev_seconds = run_epoch(model, dev_loader, config, progress=progress, epoch=epoch)
         progress.stage('aggregate_dev_video_metrics', announce=True)
-        report = evaluate_predictions(dev_records, predictions, policy, 'frame')
+        report = evaluate_predictions(dev_records, predictions, policy, kind)
         report['losses'] = {k: dev_metrics[k] for k in ('loss', 'real_class_loss', 'fake_class_loss', 'balanced_loss')}
-        score = report['video']['roc_auc']
-        if score is None:
-            raise ValueError('DEV video AUC undefined')
+        score = checkpoint_score(report, config.checkpoint_selection)
         improved = score > best
         if improved:
             best = score; best_epoch = epoch+1; stale = 0; best_balanced = dev_metrics['balanced_loss']
         elif epoch >= config.warmup_epochs:
             stale += 1
         if epoch >= config.warmup_epochs:
-            scheduler.step(score)
+            scheduler.step(score if temporal else report['video']['roc_auc'])
         entry = {'epoch': epoch+1, 'train': train_metrics, 'dev': dev_metrics, 'dev_video': report['video'],
             'sampling': diagnostic, 'learning_rates': lrs, 'train_seconds': train_seconds, 'dev_seconds': dev_seconds,
             'phase': model.phase, 'trainable_parameters': phase['trainable_parameters'],
+            'checkpoint_selection': config.checkpoint_selection, 'selection_score': score,
             'batchnorm_running_stats_frozen': True, 'is_best': improved, 'stale_epochs': stale,
             'cuda_peak_allocated_mib': torch.cuda.max_memory_allocated()/2**20}
         history.append(entry)
         progress.stage('build_checkpoint_payload', announce=True)
-        payload = {'protocol': PROTOCOL, 'config': config.as_dict(), 'index_sha256': index_hash,
+        payload = {'protocol': protocol, 'config': config.as_dict(), 'index_sha256': index_hash, 'pool_sha256':pool_hash,
+            'feature_source':feature_source,
             'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
             'scaler': scaler.state_dict(), 'rng': rng_state(), 'sampler': sampler.state_dict(), 'epoch': epoch,
             'history': history, 'best': best, 'stale': stale, 'best_epoch': best_epoch,
             'best_balanced_dev_loss': best_balanced, 'numerics': gradient_guard.state_dict(),
             'inactive_amp_scaler_state': inactive_amp_scaler_state}
-        commit_epoch(out, history, entry, payload, improved, dev_records, predictions, report, config, progress)
+        commit_epoch(out, history, entry, payload, improved, dev_records, predictions, report, config, progress, persistent_backup)
         if stale >= config.patience:
-            print(f'Early stopping: best DEV video AUC {best:.6f} at epoch {best_epoch}', flush=True)
+            print(f'Early stopping: best {selection_label(config.checkpoint_selection)} {best:.6f} at epoch {best_epoch}', flush=True)
             break
     # Regenerate final best artifacts even if an earlier session stopped during
     # plotting, or the resumed segment did not improve the prior best.
@@ -540,29 +578,47 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
     model.load_state_dict(best_state['model'])
     progress.note('Final best-checkpoint DEV evaluation (no optimizer steps).')
     best_dev_metrics, predictions, _ = run_epoch(model, dev_loader, config, progress=progress, epoch=best_epoch-1)
-    report = evaluate_predictions(dev_records, predictions, policy, 'frame')
+    report = evaluate_predictions(dev_records, predictions, policy, kind)
     report['losses'] = {k: best_dev_metrics[k] for k in ('loss', 'real_class_loss', 'fake_class_loss', 'balanced_loss')}
     progress.stage('final_prediction_artifacts', announce=True)
-    prediction_artifacts(out, dev_records, predictions, report)
+    prediction_artifacts(out, dev_records, predictions, report,unit_label=kind.title())
+    progress.stage('final_plots_and_dev_threshold_analysis', announce=True)
+    plot_history(out, history,unit_label=kind.title())
+    write_final_numerics(out, history)
+    from .calibration import save_calibration
+    calibration=save_calibration(out,dev_records,predictions,config.seed)
+    operating=calibration['reporting']
+    progress.note(f"DEV reporting families at calibration F2 threshold {calibration['threshold']:.6f}: "
+        f"precision {operating['precision']:.6f}, recall {operating['recall']:.6f}, F1 {operating['f1']:.6f}, F2 {operating['f2']:.6f}")
+    threshold_analysis=dev_threshold_analysis(
+        [p['target'] for p in predictions], [p['probability'] for p in predictions], config.threshold)
+    threshold_analysis['scope']=f'DEV-only descriptive {kind} analysis; exploratory, optimistic on full DEV'
+    write_json(out/'dev_threshold_analysis.json',threshold_analysis)
     assessment = {'status': 'Historical reference unavailable; inspect actual DEV curves.',
                   'training_auc_is_online_augmented': True,
-                  'best_to_final_dev_video_auc_change': history[-1]['dev_video']['roc_auc'] - best,
+                  'best_to_final_dev_video_auc_change': history[-1]['dev_video']['roc_auc'] - history[best_epoch-1]['dev_video']['roc_auc'],
                   'note': 'A smaller training gap alone does not demonstrate improved generalization.'}
-    reference_path = Path(index_path).parent/'historical_reference.json'
-    if reference_path.is_file():
-        reference = json.loads(reference_path.read_text())[config.model]
-        delta = report['unit']['roc_auc'] - reference['best_dev_native_roc_auc']
-        assessment.update(historical=reference, frame_auc_change_vs_historical_best=delta,
-            status=('Best-checkpoint frame ROC-AUC improved on DEV.' if delta > 0 else
-                    'Best-checkpoint frame ROC-AUC did not improve on DEV.'),
-            historical_video_comparison='Not directly comparable: historical Top-10% versus current Top-5%.',
-            causality='Multiple protocol/training changes; these runs cannot isolate the cause of a change.')
+    from .config import HISTORICAL_BASELINE
+    reference = HISTORICAL_BASELINE.get(config.model)
+    delta_auc = report['unit']['roc_auc'] - reference['dev_frame_roc_auc'] if reference else None
+    delta_pr = report['unit']['pr_auc'] - reference['dev_frame_pr_auc'] if reference else None
+    assessment.update(historical=reference, historical_weights_available=False,
+        frame_roc_auc_change=delta_auc, frame_pr_auc_change=delta_pr,
+        status='New temporal protocol; no comparable historical ResNet50-LSTM baseline.' if temporal else 'Compare frame PR-AUC and ROC-AUC against the preserved completed CNN baseline.',
+        causality='Combined pool/selection/LR configuration; cannot attribute changes to LR alone.' if config.training_pool=='fixed20k' else 'Exploratory DEV comparison; not proof of causality.')
     progress.stage('write_final_summary', announce=True)
     write_json(out/'generalization_assessment.json', assessment)
     write_json(out / 'training_summary.json', {'status': status, 'model': config.model, 'epochs_run': len(history),
-        'best_epoch': best_epoch, 'best_dev_video_roc_auc': best, 'best_balanced_dev_loss': best_balanced,
+        'best_epoch': best_epoch, 'best_dev_video_roc_auc': report['video']['roc_auc'],
+        'checkpoint_selection': config.checkpoint_selection, 'best_selection_score': best, 'best_balanced_dev_loss': best_balanced,
         'threshold': config.threshold, 'topk_fraction': config.topk_fraction, 'test_used': False,
         'overfitting_assessment': assessment})
+    progress.stage('create_final_model_zip', announce=True)
+    final_zip = package_model_run(out, config.model, len(history), final=True, snapshot_lock=progress.lock)
+    progress.note(f'Final {progress.model} download ZIP: {final_zip["archive"]}\nSHA256 {final_zip["sha256"]}')
+    if persistent_backup is not None:
+        progress.stage('verify_private_final_backup', announce=True)
+        persistent_backup.save_run(out, config, len(history), kind='final_artifacts', snapshot_lock=progress.lock)
     index.close(); del model, optimizer, scheduler, scaler, dev_loader, best_state, payload
     gc.collect(); torch.cuda.empty_cache()
     return out

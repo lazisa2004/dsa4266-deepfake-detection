@@ -9,6 +9,7 @@
 !/cnn_experiment/
 /cnn_experiment/*
 !/cnn_experiment/__init__.py
+!/cnn_experiment/backup.py
 !/cnn_experiment/checkpoints.py
 !/cnn_experiment/config.py
 !/cnn_experiment/data.py
@@ -18,19 +19,27 @@
 !/cnn_experiment/models.py
 !/cnn_experiment/training.py
 !/cnn_experiment/workflow.py
+!/cnn_experiment/pool.py
+!/cnn_experiment/temporal.py
+!/cnn_experiment/calibration.py
 
 !/tests/
 /tests/*
 !/tests/__init__.py
+!/tests/test_backup.py
 !/tests/test_data.py
 !/tests/test_github.py
 !/tests/test_training_progress.py
 !/tests/test_training_state.py
 !/tests/test_workflow.py
+!/tests/test_fixed_pool.py
+!/tests/test_temporal.py
+!/tests/test_calibration.py
 
 !/docs/
 /docs/*
 !/docs/VSCODE_KAGGLE_WORKFLOW.md
+!/docs/RETRAINING_AND_BACKUPS.md
 
 # Defense in depth for generated files and credentials anywhere below allowed paths.
 *.ipynb

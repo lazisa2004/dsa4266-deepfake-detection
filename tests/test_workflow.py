@@ -93,6 +93,30 @@ class NotebookWorkflowTests(unittest.TestCase):
             self.assertTrue((Path(folder)/'epoch_diagnostics/epoch_002/dev_metrics.json').is_file())
             self.assertTrue(paths[1].is_file()); self.assertTrue(paths[2].is_file())
 
+    def test_predeclared_frame_pr_rule_can_choose_a_different_model(self):
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(folder); runs = {}
+            for name, video_auc, pr in [('resnet50', .8, .6), ('efficientnet_b0', .9, .4)]:
+                run = root/name; run.mkdir(); runs[name] = run
+                (run/'best.pt').write_bytes(b'synthetic')
+                (run/'training_summary.json').write_text(json.dumps({'status':'trained','best_epoch':1,'best_balanced_dev_loss':.4}))
+                unit = {'roc_auc':.8,'pr_auc':pr,'precision':.7,'recall':.5,'f1':.58}
+                (run/'best_dev_metrics.json').write_text(json.dumps({'unit':unit,'video':dict(unit,roc_auc=video_auc),
+                    'losses':{'loss':.3,'real_class_loss':.2,'fake_class_loss':.6,'balanced_loss':.4}}))
+            comparison_table(runs, root/'video')
+            with self.assertRaisesRegex(ValueError, 'predeclared'):
+                comparison_table(runs, root/'mismatched', selection_metric='frame_pr_auc')
+            for run in runs.values():
+                summary = json.loads((run/'training_summary.json').read_text())
+                summary['checkpoint_selection'] = 'frame_pr_auc'
+                (run/'training_summary.json').write_text(json.dumps(summary))
+            comparison_table(runs, root/'frame', selection_metric='frame_pr_auc')
+            video = json.loads((root/'video/comparison.json').read_text())
+            frame = json.loads((root/'frame/comparison.json').read_text())
+            self.assertEqual(video['selected_cnn'],'efficientnet_b0')
+            self.assertEqual(frame['selected_cnn'],'resnet50')
+            self.assertEqual(frame['selection_metric'],'frame_pr_auc')
+
     def test_compact_stdout_preserves_full_diagnostics_on_disk(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()) as stdout:
             with RunProgress(folder, 'resnet50', 0) as progress:

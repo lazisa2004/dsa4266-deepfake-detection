@@ -3,6 +3,7 @@ import csv
 import hashlib
 import json
 import math
+import numpy as np
 from pathlib import Path
 from cnn_experiment.data import write_json
 
@@ -202,7 +203,7 @@ def localization_metrics(records,predictions,threshold,kind):
 def flatten(value, prefix=''):
     result = {}
     for key, item in value.items():
-        name = prefix + key
+        name = prefix + str(key)
         if isinstance(item, dict):
             result.update(flatten(item, name + '.'))
         else:
@@ -224,12 +225,12 @@ def write_history_metrics(out, history):
     csv_tmp.replace(out/'history.csv')
 
 
-def plot_history(out, history):
+def plot_history(out, history,unit_label='Frame'):
     out = Path(out)
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     epochs = [r['epoch'] for r in history]
     for key, label in (('loss', 'TRAIN (balanced, augmented)'),):
         axes[0, 0].plot(epochs, [r['train'][key] for r in history], label=label)
@@ -237,10 +238,17 @@ def plot_history(out, history):
     for key, label in (('balanced_loss', 'Balanced DEV'), ('real_class_loss', 'Real DEV'), ('fake_class_loss', 'Fake DEV')):
         axes[0, 1].plot(epochs, [r['dev'][key] for r in history], label=label)
     axes[1, 0].plot(epochs, [r['train']['roc_auc'] for r in history], label='TRAIN online')
-    axes[1, 0].plot(epochs, [r['dev']['roc_auc'] for r in history], label='DEV frame')
+    axes[1, 0].plot(epochs, [r['dev']['roc_auc'] for r in history], label='DEV '+unit_label.lower())
     axes[1, 1].plot(epochs, [r['dev_video']['roc_auc'] for r in history], label='DEV video Top-5%')
-    for ax, title in zip(axes.flat, ('BCE loss', 'Class-aware DEV BCE', 'Frame ROC-AUC', 'Video ROC-AUC')):
-        ax.set_title(title); ax.set_xlabel('Epoch'); ax.legend(); ax.grid(alpha=.2)
+    axes[0, 2].plot(epochs, [r['dev'].get('pr_auc') for r in history], label='DEV '+unit_label.lower()+' PR-AUC')
+    axes[1, 2].plot(epochs, [r['dev'].get('precision') for r in history], label='DEV precision at 0.5')
+    axes[1, 2].plot(epochs, [r['dev'].get('recall') for r in history], label='DEV recall at 0.5')
+    for i, (ax, title) in enumerate(zip(axes.flat, ('BCE loss', 'Class-aware DEV BCE', 'Frame PR-AUC',
+                                                   'Frame ROC-AUC', 'Video ROC-AUC', 'Frame precision / recall'))):
+        ax.set_title(title.replace('Frame',unit_label)); ax.set_xlabel('Epoch'); ax.legend(); ax.grid(alpha=.2)
+        ax.set_xlim(left=0); ax.set_ylim(bottom=0)
+        if i >= 2:
+            ax.set_ylim(0, 1)
     fig.tight_layout(); fig.savefig(out / 'training_curves.png', dpi=150); plt.close(fig)
 
 
@@ -250,7 +258,7 @@ def write_history(out, history):
     plot_history(out, history)
 
 
-def prediction_artifacts(out, records, predictions, report):
+def prediction_artifacts(out, records, predictions, report, render_plots=True,unit_label='Frame'):
     out = Path(out)
     with (out / 'best_dev_predictions.csv').open('w', newline='', encoding='utf-8') as h:
         fields = ['candidate_id', 'source_file', 'source_family', 'timestamp_exact', 'label', 'probability']
@@ -263,10 +271,12 @@ def prediction_artifacts(out, records, predictions, report):
     write_json(out / 'best_dev_video_predictions.json', report['videos'])
     curves = {}
     for name, labels, scores in (
-        ('frame', [p['target'] for p in predictions], [p['probability'] for p in predictions]),
+        (unit_label.lower(), [p['target'] for p in predictions], [p['probability'] for p in predictions]),
         ('video', [p['target'] for p in report['videos']], [p['probability'] for p in report['videos']])):
         curves[name] = binary_curves(labels, scores)
     write_json(out / 'best_dev_curves.json', curves)
+    if not render_plots:
+        return
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -278,23 +288,28 @@ def prediction_artifacts(out, records, predictions, report):
     axes[1].set(xlabel='Recall', ylabel='Precision', title='DEV precision-recall')
     for ax in axes:
         ax.legend(); ax.grid(alpha=.2)
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     fig.tight_layout(); fig.savefig(out / 'best_dev_roc_pr.png', dpi=150); plt.close(fig)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4))
     for ax, level in zip(axes, ('unit', 'video')):
-        cm = report[level]['confusion_matrix']; ax.imshow(cm, cmap='Blues')
+        cm = report[level]['confusion_matrix']; ax.imshow(cm, cmap='Blues', vmin=0)
         for i in range(2):
             for j in range(2):
                 ax.text(j, i, str(cm[i][j]), ha='center', va='center')
         ax.set(xticks=[0, 1], yticks=[0, 1], xticklabels=['Real', 'Fake'], yticklabels=['Real', 'Fake'],
-               xlabel='Predicted', ylabel='True', title=('Frame' if level == 'unit' else 'Video') + f" threshold {report[level]['threshold']}")
+               xlabel='Predicted', ylabel='True', title=(unit_label if level == 'unit' else 'Video') + f" threshold {report[level]['threshold']}")
     fig.tight_layout(); fig.savefig(out / 'best_dev_confusion.png', dpi=150); plt.close(fig)
 
 
-def compare_runs(runs, output):
+def compare_runs(runs, output, selection_metric='video_roc_auc'):
+    from .config import selection_label
+    selection_label(selection_metric)  # Validate the predeclared rule before writing outputs.
     rows = []
     for name, run in runs.items():
         run = Path(run)
         summary = json.loads((run / 'training_summary.json').read_text())
+        if summary.get('checkpoint_selection', 'video_roc_auc') != selection_metric:
+            raise ValueError('Comparison rule differs from the predeclared checkpoint selection; do not relabel completed runs.')
         metrics = json.loads((run / 'best_dev_metrics.json').read_text())
         rows.append({'model': name, 'status': summary['status'], 'best_epoch': summary['best_epoch'],
                      'dev_video_roc_auc': metrics['video']['roc_auc'], 'dev_frame_roc_auc': metrics['unit']['roc_auc'],
@@ -306,11 +321,13 @@ def compare_runs(runs, output):
     output.mkdir(parents=True)
     with (output / 'model_comparison.csv').open('w', newline='', encoding='utf-8') as h:
         writer = csv.DictWriter(h, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
-    winner = max(rows, key=lambda r: (r['dev_video_roc_auc'], -r['balanced_dev_loss']))
-    write_json(output / 'comparison.json', {'selection': 'DEV video ROC-AUC; balanced DEV loss breaks ties',
+    score_key = 'dev_video_roc_auc' if selection_metric == 'video_roc_auc' else 'dev_frame_pr_auc'
+    winner = max(rows, key=lambda r: (r[score_key], -r['balanced_dev_loss']))
+    write_json(output / 'comparison.json', {'selection': selection_label(selection_metric)+'; balanced DEV loss breaks ties',
+        'selection_metric': selection_metric,
         'models': rows, 'selected_cnn': winner['model'], 'lstm_trained': False,
         'historical_comparison': 'Inspect frame ROC-AUC and class losses against documented history. Historical Top-10% video scores cannot establish a Top-5% improvement without re-aggregation of saved DEV predictions.'})
-    print(json.dumps(rows, indent=2)); print('Selected CNN by DEV:', winner['model'])
+    print(f"Saved DEV comparison for {len(rows)} models. Selected CNN by {selection_label(selection_metric)}: {winner['model']}")
     return rows
 
 
@@ -366,28 +383,28 @@ def display_epoch_diagnostics(paths):
             display(Image(filename=str(path)))
 
 
-def comparison_table(runs, output):
+def comparison_table(runs, output, selection_metric='video_roc_auc'):
     """Existing selection policy, with frame/video precision, recall, F1 and losses."""
     from cnn_experiment.data import write_json
     import csv
     output = Path(output)
     if output.exists():
         raise FileExistsError('Comparison already exists; preserve it or choose a new comparison folder.')
-    rows = compare_runs(runs, output)
+    rows = compare_runs(runs, output, selection_metric)
     for row in rows:
         run = Path(row['run'])
         metrics = json.loads((run/'best_dev_metrics.json').read_text(encoding='utf-8'))
         losses = metrics['losses']
         row.update(dev_loss=losses['loss'], real_dev_loss=losses['real_class_loss'],
-                   fake_dev_loss=losses['fake_class_loss'])
+                   fake_dev_loss=losses['fake_class_loss'],dev_video_pr_auc=metrics['video'].get('pr_auc'))
         digest = hashlib.sha256()
         with (run/'best.pt').open('rb') as checkpoint:
             for chunk in iter(lambda: checkpoint.read(2**20), b''):
                 digest.update(chunk)
         row['best_checkpoint_sha256'] = digest.hexdigest()
         for level, key in (('frame', 'unit'), ('video', 'video')):
-            for metric in ('precision', 'recall', 'f1'):
-                row[f'dev_{level}_{metric}'] = metrics[key][metric]
+            for metric in ('precision', 'recall', 'f1','f2'):
+                row[f'dev_{level}_{metric}'] = metrics[key].get(metric)
     with (output/'model_comparison.csv').open('w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader(); writer.writerows(rows)
@@ -395,4 +412,57 @@ def comparison_table(runs, output):
     saved = json.loads((output/'comparison.json').read_text(encoding='utf-8'))
     saved['models'] = rows
     write_json(output/'comparison.json', saved)
+    # Frame localization analysis is primary; this table does NOT silently
+    # change the existing checkpoint or protected final-model selection rule.
+    localization = sorted(rows, key=lambda r: (r['dev_frame_pr_auc'], r['dev_frame_roc_auc']), reverse=True)
+    with (output/'frame_localization_comparison.csv').open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(localization[0]))
+        writer.writeheader(); writer.writerows(localization)
     return rows
+
+
+def write_final_numerics(out, history):
+    """One final debugging figure; detailed batch records remain in numerics.jsonl."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.4))
+    for key, title, ax in zip(('gradient_norm_max_finite', 'amp_scale_end', 'skipped_steps'),
+            ('Max finite pre-clip gradient norm', 'AMP scale', 'Skipped optimizer steps'), axes):
+        ax.plot([r['epoch'] for r in history], [r['train'].get('numerics', {}).get(key) for r in history], marker='o')
+        ax.set(title=title, xlabel='Epoch', xlim=(0, None), ylim=(0, None)); ax.grid(alpha=.2)
+    fig.tight_layout(); fig.savefig(Path(out)/'numerical_curves.png', dpi=120); plt.close(fig)
+
+
+def dev_threshold_analysis(labels, scores, reference_threshold=.5):
+    """O(N log N) DEV-only sweep with ties grouped; no policy or weights changed."""
+    y = np.asarray(labels, dtype=int); p = np.asarray(scores, dtype=float)
+    if y.ndim != 1 or p.shape != y.shape or not len(y) or not np.isin(y, [0, 1]).all() or not np.isfinite(p).all() or (p < 0).any() or (p > 1).any():
+        raise ValueError('Threshold analysis requires finite binary DEV probabilities')
+    positives, negatives = int(y.sum()), int(len(y)-y.sum())
+    if not positives or not negatives:
+        raise ValueError('DEV threshold analysis requires both classes')
+    order = np.argsort(-p, kind='stable'); yp, pp = y[order], p[order]
+    ends = np.r_[np.flatnonzero(pp[:-1] != pp[1:]), len(p)-1]
+    tp_all = np.cumsum(yp); rows = []
+    def row(threshold, tp, fp):
+        fn, tn = positives-tp, negatives-fp
+        precision, recall = tp/(tp+fp) if tp+fp else 0., tp/positives
+        return {'threshold': float(threshold), 'precision': precision, 'recall': recall,
+            'f1': 2*tp/(2*tp+fp+fn) if 2*tp+fp+fn else 0.,
+            'f2': 5*tp/(5*tp+fp+4*fn) if 5*tp+fp+4*fn else 0.,
+            'false_positive_rate': fp/negatives, 'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn}
+    # nextafter includes the valid 'predict none' operating point, even if p=1.
+    rows.append(row(np.nextafter(float(pp[0]), float('inf')), 0, 0))
+    for end in ends:
+        tp = int(tp_all[end]); rows.append(row(pp[end], tp, int(end+1-tp)))
+    selected = p >= reference_threshold
+    reference = row(reference_threshold, int(y[selected].sum()), int(selected.sum()-y[selected].sum()))
+    return {'scope': 'DEV-only descriptive frame threshold analysis; exploratory, optimistic on DEV',
+        'does_not_change': ['ROC-AUC', 'PR-AUC', 'BCE loss', 'configured threshold', 'TEST policy'],
+        'reference': reference, 'max_f1': max(rows, key=lambda r: r['f1']),
+        'max_f2': max(rows, key=lambda r: r['f2']),
+        'fpr_tradeoffs': [{'max_fpr': limit, 'operating_point': max(
+            (r for r in rows if r['false_positive_rate'] <= limit), key=lambda r: (r['recall'], r['precision']))}
+            for limit in (0., .001, .005, .01, .05)],
+        'thresholds_evaluated': len(rows), 'n': len(y)}

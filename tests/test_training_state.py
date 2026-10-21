@@ -108,6 +108,34 @@ class GradientTests(unittest.TestCase):
 
 
 class ResumeTests(unittest.TestCase):
+    def test_frame_pr_resume_keeps_video_auc_separate_from_selection_score(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); config, _, _ = self.fixture(root)
+            config = replace(config, checkpoint_selection='frame_pr_auc')
+            for name in ('last.pt', 'best.pt'):
+                state = torch.load(root/name, weights_only=True)
+                state['config']['checkpoint_selection'] = 'frame_pr_auc'
+                state['best'] = .4
+                for row in state['history']:
+                    row['dev_video'] = {'roc_auc': .85}
+                    row['dev']['pr_auc'] = .4 if row['epoch']==2 else .3
+                torch.save(state, root/name)
+            bundle = load_resume_bundle(root/'last.pt', config, 'fixture-index')
+            self.assertEqual(bundle['report']['best_selection_score'], .4)
+            self.assertEqual(bundle['report']['best_dev_video_roc_auc'], .85)
+
+    def test_legacy_selector_defaults_to_video_and_cannot_change_mid_resume(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); config, payload, _ = self.fixture(root)
+            for name in ('last.pt', 'best.pt'):
+                state = torch.load(root/name, weights_only=True)
+                state['config'].pop('checkpoint_selection', None)
+                torch.save(state, root/name)
+            bundle = load_resume_bundle(root/'last.pt', config, 'fixture-index')
+            self.assertEqual(bundle['report']['checkpoint_selection'], 'video_roc_auc')
+            with self.assertRaisesRegex(ValueError, 'checkpoint_selection'):
+                load_resume_bundle(root/'last.pt', replace(config, checkpoint_selection='frame_pr_auc'), 'fixture-index')
+
     def fixture(self, folder):
         config = Config(train_per_class=24)
         model = torch.nn.Linear(2, 1)

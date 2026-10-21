@@ -14,6 +14,11 @@ RUNTIME_MUTABLE = {'epochs', 'workers', 'prefetch_factor', 'cache_mib', 'loader_
                    'max_consecutive_gradient_skips', 'max_gradient_skips_per_epoch'}
 
 
+def saved_config_value(saved, key):
+    # Checkpoints predating the optional selector used video ROC-AUC exclusively.
+    return saved.get(key, {'checkpoint_selection':'video_roc_auc', 'training_pool':'legacy_full_index'}.get(key))
+
+
 def rng_state():
     state = np.random.get_state()
     return {'python': random.getstate(), 'numpy': (state[0], state[1].tolist(), state[2], state[3], state[4]),
@@ -40,7 +45,7 @@ def assert_finite_state(value, name):
         raise ValueError(f'Checkpoint contains non-finite value: {name}; not safe to resume')
 
 
-def load_resume_bundle(source, config, index_hash, expected_completed_epoch=None):
+def load_resume_bundle(source, config, index_hash, expected_completed_epoch=None, *, pool_hash=None, protocol=PROTOCOL):
     """Validate only the explicitly supplied checkpoints, never search old runs."""
     source = Path(source)
     if not source.is_file():
@@ -48,11 +53,13 @@ def load_resume_bundle(source, config, index_hash, expected_completed_epoch=None
     state = torch.load(source, map_location='cpu', weights_only=True)
     required = {'protocol', 'config', 'index_sha256', 'epoch', 'history', 'model', 'optimizer',
                 'scheduler', 'scaler', 'rng', 'sampler', 'best', 'stale', 'best_epoch', 'best_balanced_dev_loss'}
-    if not required <= state.keys() or state['protocol'] != PROTOCOL or state['index_sha256'] != index_hash:
+    if not required <= state.keys() or state['protocol'] != protocol or state['index_sha256'] != index_hash:
         raise ValueError('Resume requires a complete v2 checkpoint and the exact saved candidate index')
+    if state.get('pool_sha256') != pool_hash:
+        raise ValueError('Resume requires the exact immutable TRAIN pool manifest')
     saved = state['config']
     for key, value in config.as_dict().items():
-        if key not in RUNTIME_MUTABLE and key != 'amp' and saved.get(key) != value:
+        if key not in RUNTIME_MUTABLE and key != 'amp' and saved_config_value(saved, key) != value:
             raise ValueError(f'Resume configuration mismatch: {key}: saved={saved.get(key)} requested={value}')
     if not saved['amp'] and config.amp:
         raise ValueError('This recovery path allows unchanged precision or AMP -> FP32, not FP32 -> AMP')
@@ -79,16 +86,20 @@ def load_resume_bundle(source, config, index_hash, expected_completed_epoch=None
     prior_best = torch.load(best_source, map_location='cpu', weights_only=True)
     if (prior_best.get('protocol'), prior_best.get('index_sha256'), prior_best.get('config', {}).get('model'),
         prior_best.get('best'), prior_best.get('epoch', -1)+1) != (
-        PROTOCOL, index_hash, config.model, state['best'], state['best_epoch']):
+        protocol, index_hash, config.model, state['best'], state['best_epoch']):
         raise ValueError('Companion best.pt does not match saved selection state')
+    if prior_best.get('pool_sha256') != pool_hash:
+        raise ValueError('Companion best.pt pool identity differs')
     assert_finite_state(prior_best['model'], 'best.model')
     for key, value in config.as_dict().items():
-        if key not in RUNTIME_MUTABLE and key != 'amp' and prior_best['config'].get(key) != value:
+        if key not in RUNTIME_MUTABLE and key != 'amp' and saved_config_value(prior_best['config'], key) != value:
             raise ValueError(f'Companion best.pt configuration mismatch: {key}')
     precision_changed = bool(saved['amp']) != bool(config.amp)
     report = {'source_last': str(source), 'source_best': str(best_source), 'model': config.model,
         'completed_epoch': completed, 'next_epoch': completed+1, 'best_epoch': state['best_epoch'],
-        'best_dev_video_roc_auc': state['best'], 'stale_epochs': state['stale'],
+        'best_dev_video_roc_auc': state['history'][state['best_epoch']-1]['dev_video']['roc_auc']
+            if 'dev_video' in state['history'][state['best_epoch']-1] else (state['best'] if config.checkpoint_selection == 'video_roc_auc' else None),
+        'checkpoint_selection': config.checkpoint_selection, 'best_selection_score': state['best'], 'stale_epochs': state['stale'],
         'saved_amp': saved['amp'], 'requested_amp': config.amp, 'precision_changed': precision_changed,
         'saved_amp_scale': state['scaler'].get('scale'),
         'scaler_action': 'restored' if config.amp else 'disabled; saved AMP state retained as provenance',

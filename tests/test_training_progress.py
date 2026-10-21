@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import torch
 from cnn_experiment.config import Config
@@ -53,6 +53,25 @@ def entry(epoch=1, improved=True):
 
 
 class ProgressTests(unittest.TestCase):
+    def test_remote_sdk_randomness_does_not_advance_training_rng(self):
+        import random
+        import numpy as np
+        from cnn_experiment.checkpoints import rng_state
+        before = rng_state()
+        backup = Mock()
+        backup.save_run.side_effect = lambda *a, **k: (random.random(), np.random.rand(), torch.rand(3))
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()), \
+             patch('cnn_experiment.training.prediction_artifacts'), \
+             patch('cnn_experiment.training.package_model_run', return_value={'archive':'fake.zip','sha256':'x','bytes':1}):
+            out = Path(folder); row = entry()
+            with RunProgress(out, 'resnet50', 0) as progress:
+                commit_epoch(out, [row], row, {'best_epoch': 1}, True, [], [], {}, Config(), progress, backup)
+        after = rng_state()
+        self.assertEqual(before['python'], after['python'])
+        self.assertEqual(before['numpy'], after['numpy'])
+        self.assertTrue(torch.equal(before['torch'], after['torch']))
+        self.assertTrue(all(torch.equal(a, b) for a, b in zip(before['cuda'], after['cuda'])))
+
     def test_heartbeat_reports_a_stalled_stage(self):
         heard = threading.Event()
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
@@ -116,33 +135,39 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(loaded[0].shape, (8, 3, 224, 224))
         self.assertTrue(torch.equal(*loaded))
 
-    def test_history_and_last_survive_plot_error(self):
-        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()) as stdout:
+    def test_history_and_last_survive_remote_backup_error(self):
+        from cnn_experiment.backup import BackupError
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()) as stdout, \
+             patch('cnn_experiment.training.prediction_artifacts'), \
+             patch('cnn_experiment.training.package_model_run', return_value={'archive':'fake.zip','sha256':'x','bytes':1}):
             out = Path(folder); record = entry()
-            with patch('cnn_experiment.training.plot_history', side_effect=RuntimeError('plot failed')):
-                with self.assertRaisesRegex(RuntimeError, 'plot failed'):
-                    with RunProgress(out, 'resnet50', 0) as progress:
-                        commit_epoch(out, [record], record, {'best_epoch': 1, 'epoch': 0},
-                                     True, [], [], {}, Config(), progress)
+            backup = Mock(); backup.save_run.side_effect = BackupError('upload unavailable')
+            with self.assertRaisesRegex(BackupError, 'upload unavailable'):
+                with RunProgress(out, 'resnet50', 0) as progress:
+                    commit_epoch(out, [record], record, {'best_epoch': 1, 'epoch': 0},
+                                 True, [], [], {}, Config(), progress, backup)
             for name in ('history.csv', 'history.jsonl', 'last.pt', 'best.pt', 'failure_traceback.txt'):
                 self.assertTrue((out/name).is_file(), name)
             state = json.loads((out/'run_status.json').read_text())
-            self.assertEqual(state['failed_at']['stage'], 'plot_history')
+            self.assertEqual(state['failed_at']['stage'], 'verify_private_epoch_backup')
             self.assertIn('Epoch 1/10 completed', stdout.getvalue())
             self.assertIn('Checkpoint saved:', stdout.getvalue())
 
     def test_each_epoch_commits_and_retains_best(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()) as stdout:
             out = Path(folder); history = []
-            with patch('cnn_experiment.training.plot_history'), patch('cnn_experiment.training.prediction_artifacts') as predictions, \
-                    patch('cnn_experiment.training.write_epoch_diagnostics', return_value=[]) as diagnostics:
+            with patch('cnn_experiment.training.plot_history') as plots, patch('cnn_experiment.training.prediction_artifacts') as predictions, \
+                    patch('cnn_experiment.training.write_epoch_diagnostics', return_value=[]) as diagnostics, \
+                    patch('cnn_experiment.training.package_model_run', return_value={'archive':'fake.zip','sha256':'x','bytes':1}):
                 with RunProgress(out, 'efficientnet_b0', 0) as progress:
                     for epoch in (1, 2):
                         row = entry(epoch, epoch == 1); history.append(row)
                         commit_epoch(out, history, row, {'epoch': epoch, 'best_epoch': 1},
-                                     epoch == 1, [], [], {}, Config(model='efficientnet_b0'), progress)
+                                     epoch == 1, [], [], {}, Config(model='efficientnet_b0'), progress, Mock())
                 self.assertEqual(predictions.call_count, 1)
-                self.assertEqual(diagnostics.call_count, 2)
+                self.assertEqual(diagnostics.call_count, 0)
+                plots.assert_not_called()
+                self.assertFalse(predictions.call_args.kwargs['render_plots'])
             self.assertEqual(len((out/'history.jsonl').read_text().splitlines()), 2)
             self.assertEqual(torch.load(out/'best.pt', weights_only=True)['epoch'], 1)
             self.assertEqual(torch.load(out/'last.pt', weights_only=True)['epoch'], 2)

@@ -13,7 +13,7 @@ import tempfile
 REPOSITORY_URL = 'https://github.com/lazisa2004/dsa4266-deepfake-detection.git'
 
 
-def checkout_private_repo(destination, ref='main', secret_name='GITHUB_TOKEN'):
+def checkout_private_repo(destination, ref='main', secret_name='Github Token'):
     """Fetch a fresh detached checkout; return only non-secret provenance.
 
     Does not overwrite an existing directory or use persistent credential helpers.
@@ -55,7 +55,7 @@ def checkout_private_repo(destination, ref='main', secret_name='GITHUB_TOKEN'):
             from kaggle_secrets import UserSecretsClient
             token = UserSecretsClient().get_secret(secret_name)
         except Exception:
-            raise RuntimeError('Enable the GITHUB_TOKEN secret for this Kaggle notebook. Never paste a token into a cell.') from None
+            raise RuntimeError('Enable the Github Token secret for this Kaggle notebook. Never paste a token into a cell.') from None
         if not isinstance(token, str) or not token.strip():
             raise RuntimeError('The Kaggle GitHub secret is empty.')
         # The temporary executable contains no secret. Git consumes its stdout.

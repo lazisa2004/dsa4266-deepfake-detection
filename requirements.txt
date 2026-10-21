@@ -6,3 +6,5 @@ av>=14
 Pillow>=9
 numpy>=1.24
 matplotlib>=3.7
+
+# Private Kaggle clients are optional; the main notebook never initializes remote uploads.

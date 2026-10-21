@@ -18,6 +18,7 @@ from torch import nn
 from cnn_experiment.data import Index, write_json, EpochSampler, make_loader, memory_mib
 from cnn_experiment.models import StagedCNN, make_optimizer
 from cnn_experiment.training import RunProgress, GradientGuard, require_cuda, seed_everything
+from .pool import cnn_inputs, cnn_records, FixedPool, FixedPoolSampler, DevSchedule
 
 
 def input_files(name, base='/kaggle/input'):
@@ -112,10 +113,19 @@ def validate_candidates(index_path, data_root):
         index.close()
 
 
-def verify_epoch_sampling(index_path, data_root, config):
+def verify_epoch_sampling(index_path, data_root, config, pool_path=None):
     """Verify two balanced rotating CNN epochs; return compact diagnostics only."""
     from cnn_experiment.data import Index
     from cnn_experiment.data import EpochSampler
+    if config.training_pool=='fixed20k':
+        pool=FixedPool(pool_path,data_root);left=FixedPoolSampler(pool,4000,config.seed);right=FixedPoolSampler(pool,4000,config.seed)
+        reports=[]
+        for epoch in range(config.epochs):
+            ids,report=left.select(epoch);other,_=right.select(epoch)
+            if ids!=other or len(ids)!=8000 or len(set(ids))!=8000 or sum(pool.frames[i]['label'] for i in ids)!=4000:
+                raise AssertionError('CNN pools/epoch IDs must agree exactly and remain balanced/unique')
+            reports.append(report)
+        return reports
     index = Index(index_path, data_root)
     try:
         if config.train_per_class != 4000:
@@ -201,11 +211,11 @@ def package_session(session, destination='/kaggle/working/experiment1_cnn_v2_bac
     return result
 
 
-def benchmark_loader(index_path, data_root, config, samples=512):
+def benchmark_loader(index_path, data_root, config, samples=512,pool_path=None):
     """Kaggle loader benchmark; a subset is timing evidence, not training."""
-    index = Index(index_path, data_root)
-    ids, _ = EpochSampler(index, per_class=config.train_per_class, seed=config.seed).select(0)
-    records = index.records('train', 'frame', ids[:samples])
+    index,sampler,pool=cnn_inputs(config,index_path,data_root,pool_path)
+    ids,_=sampler.select(0)
+    records=cnn_records(index,pool,ids[:samples])
     dev = index.records('dev', 'frame')
     # Distributed contiguous minibatches approximate the actual fixed DEV order.
     step = max(1, len(dev) // max(1, samples // config.batch_size))
@@ -227,12 +237,12 @@ def benchmark_loader(index_path, data_root, config, samples=512):
     return reports
 
 
-def probe_gpu(index_path, data_root, weights_root, config):
+def probe_gpu(index_path, data_root, weights_root, config,pool_path=None):
     """One disposable forward/backward, zero optimizer steps, on CUDA only."""
     require_cuda(); seed_everything(config.seed)
-    index = Index(index_path, data_root)
-    ids, _ = EpochSampler(index, per_class=config.train_per_class, seed=config.seed).select(0)
-    records = index.records('train', 'frame', ids[:config.batch_size])
+    index,sampler,pool=cnn_inputs(config,index_path,data_root,pool_path)
+    ids,_=sampler.select(0)
+    records=cnn_records(index,pool,ids[:config.batch_size])
     images, targets, _ = next(iter(make_loader(records, data_root, replace(config, workers=0), training=True)))
     model = StagedCNN(config, weights_root).cuda(); model.set_phase(True); model.train()
     optimizer = make_optimizer(model, config)
@@ -259,7 +269,7 @@ def probe_gpu(index_path, data_root, weights_root, config):
     return report
 
 
-def diagnose_training_start(config, index_path, data_root, weights_root, output, max_batches=2):
+def diagnose_training_start(config, index_path, data_root, weights_root, output, max_batches=2,pool_path=None):
     """Compare main-process vs spawned loading AFTER CUDA model initialization.
 
     Uses exact first-epoch candidate ordering and actual AMP backward/unscale/
@@ -274,9 +284,9 @@ def diagnose_training_start(config, index_path, data_root, weights_root, output,
     with RunProgress(out, config.model, config.heartbeat_seconds) as progress:
         seed_everything(config.seed)
         progress.stage('diagnostic_index', announce=True)
-        index = Index(index_path, data_root)
-        ids, _ = EpochSampler(index, per_class=config.train_per_class, seed=config.seed).select(0)
-        records = index.records('train', 'frame', ids[:max_batches*config.batch_size])
+        index,sampler,pool=cnn_inputs(config,index_path,data_root,pool_path)
+        ids,_=sampler.select(0)
+        records=cnn_records(index,pool,ids[:max_batches*config.batch_size])
         index.close()
         progress.stage('diagnostic_cuda_model', announce=True)
         model = StagedCNN(config, weights_root).cuda(); model.set_phase(False); model.train()
