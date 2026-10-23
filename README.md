@@ -13,6 +13,12 @@ profile: fixed20k_lr15e6, max10/patience3, warm-up2, dropout0.3, AdamW head1e-4 
 final-stage1.5e-5 and DEV frame PR-AUC checkpoint selection. The matching LR1e-5
 control and original historical baseline remain separately named.
 
+The approved reusable combined TRAIN/DEV index is also available at
+[`metadata/candidates.sqlite`](metadata/README.md). It contains frame/clip locations,
+timestamps and visual labels, not images, TEST records or weights. The notebook
+continues using the attached `meta-dataa` input by default. See the metadata README
+for exact counts, verification and the optional repository-index path override.
+
 The new frozen ResNet50-LSTM requires a selected TRAINED ResNet50 best.pt,
 extracts pooled2048 features in microbatches and trains the LSTM/classifier only.
 Separate16-frame /stride12 /10FPS clips;1,500 real+1,500 fake per epoch. One fake
@@ -28,12 +34,14 @@ before expiry. No mandatory download test, Kaggle API authentication or upload.
 
 ## Maintained files
 
-30 reviewed files:14 package files including initializer,10 test files including
-initializer,2 guides and4 root support files. New pool.py, temporal.py and
+32 tracked files:14 package files including initializer,10 test files including
+initializer,2 guides,4 root support files, plus the approved index and its README.
+New pool.py, temporal.py and
 calibration.py reuse unchanged data.py decoder/preprocessing and models.py CNNs.
 training.py is the shared CNN/temporal training/AMP/progress/checkpoint engine.
 Original packages, notebooks, checkpoints, datasets, histories and backups stay
-local, ignored and preserved. The allowlist excludes all unreviewed files.
+local, ignored and preserved, except for the explicitly approved metadata index.
+The allowlist excludes all unreviewed files.
 
 ## Lightweight checks
 

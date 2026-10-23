@@ -106,3 +106,9 @@ secrets.toml
 *.pfx
 .DS_Store
 Thumbs.db
+
+# Explicitly approved reusable TRAIN/DEV metadata; no other generated inputs.
+!/metadata/
+/metadata/*
+!/metadata/candidates.sqlite
+!/metadata/README.md
