@@ -89,12 +89,15 @@ class GitHubBootstrapTests(unittest.TestCase):
     def test_local_notebook_embeds_bootstrap_and_defaults_fresh(self):
         root = Path(__file__).resolve().parents[1]
         nb = json.loads((root/'experiment1_cnn_v2_vscode_kaggle.ipynb').read_text(encoding='utf-8'))
-        first = next(c['source'] for c in nb['cells'] if c['cell_type'] == 'code')
-        self.assertTrue(first.startswith((root/'cnn_experiment/github.py').read_text(encoding='utf-8')))
+        first = next(''.join(c['source']) for c in nb['cells'] if c['cell_type'] == 'code')
+        # Saved notebooks may use the list-of-lines representation and retain outputs.
+        bootstrap = (root/'cnn_experiment/github.py').read_text(encoding='utf-8')
+        self.assertEqual(first.split('REPOSITORY_URL =', 1)[1].split('import importlib', 1)[0].strip(),
+                         bootstrap.split('REPOSITORY_URL =', 1)[1].strip())
         self.assertIn('checkout_private_repo(CODE_ROOT, GITHUB_REF)', first)
         self.assertIn("secret_name='Github Token'", first)
         self.assertIn("GITHUB_REF = 'main'", first)
-        source = '\n'.join(c['source'] for c in nb['cells'])
+        source = '\n'.join(''.join(c['source']) for c in nb['cells'])
         self.assertIn("write_json(SESSION/'git_provenance.json', GIT_PROVENANCE)", source)
         self.assertNotIn('CODE_ZIP_OVERRIDE', source)
         self.assertNotIn('find_code_dirs', source)
@@ -109,7 +112,11 @@ class GitHubBootstrapTests(unittest.TestCase):
         self.assertIn('preflight_temporal(',source)
         self.assertIn('LSTM_CONFIG = TemporalConfig().validate()',source)
         self.assertNotIn('EXPECTED_COMPLETED_EPOCH', source)
-        self.assertTrue(all(not c.get('outputs') for c in nb['cells']))
+        for cell in nb['cells']:
+            if cell['cell_type'] == 'code':
+                compile(''.join(cell['source']), 'local_notebook', 'exec')
+        self.assertIn('display_completed_run(', source)
+        self.assertIn('SAVED_MODEL_RUNS', source)
 
 
 if __name__ == '__main__':

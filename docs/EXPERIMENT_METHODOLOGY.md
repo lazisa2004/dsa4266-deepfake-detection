@@ -2,7 +2,7 @@
 
 ## What survives from the completed CNN runs
 
-The two originals in `C:\Users\flipp\Downloads` were found and matched against all
+The two original downloaded history files were found and matched against all
 five reported results for each model, using full CSV precision. Neither original
 was modified. Byte-identical copies and SHA256 provenance are in the ignored local
 `linked/baselines/completed_cnn_20261021/` folder. Previous trained weights are lost.

@@ -397,7 +397,7 @@ def run_epoch(model, loader, config, optimizer=None, scaler=None, *, progress=No
     return metrics, predictions, time.perf_counter() - started
 
 
-def commit_epoch(out, history, entry, payload, improved, records, predictions, report, config, progress, persistent_backup=None):
+def commit_epoch(out, history, entry, payload, improved, records, predictions, report, config, progress, persistent_backup=None, input_pipeline=None):
     """Commit locally, create a downloadable ZIP; remote backup is opt-in. No plots."""
     print_epoch_summary(progress, entry, config, payload['best_epoch'])
     progress.stage('write_history_metrics', announce=True)
@@ -413,6 +413,9 @@ def commit_epoch(out, history, entry, payload, improved, records, predictions, r
     if improved:
         progress.stage('write_best_prediction_artifacts', announce=True)
         prediction_artifacts(out, records, predictions, report, render_plots=False,unit_label='Clip' if config.model=='resnet50_lstm' else 'Frame')
+    if input_pipeline is not None:
+        progress.stage('snapshot_input_pipeline_metadata', announce=True)
+        input_pipeline.snapshot(out)
     progress.stage('create_epoch_download_zip', announce=True)
     receipt = package_model_run(out, config.model, entry['epoch'], snapshot_lock=progress.lock)
     progress.note(f'Download ZIP (completed Epoch {entry["epoch"]}): {receipt["archive"]}\n'
@@ -427,7 +430,7 @@ def commit_epoch(out, history, entry, payload, improved, records, predictions, r
     progress.stage('epoch_artifacts_completed', announce=True)
 
 
-def train(config, index_path, data_root, weights_root, output, resume_from=None, *, persistent_backup=None, pool_path=None):
+def train(config, index_path, data_root, weights_root, output, resume_from=None, *, persistent_backup=None, pool_path=None, input_pipeline=None):
     config.validate()
     if persistent_backup is not None:
         persistent_backup.require_ready(config, digest(index_path))
@@ -437,10 +440,13 @@ def train(config, index_path, data_root, weights_root, output, resume_from=None,
         raise FileExistsError(f'Existing run preserved: {out}. Choose a new versioned run; use explicit resume_from.')
     out.mkdir(parents=True)
     with RunProgress(out, config.model, config.heartbeat_seconds) as progress:
-        return _train(config, index_path, data_root, weights_root, out, resume_from, progress, persistent_backup, pool_path)
+        return _train(config, index_path, data_root, weights_root, out, resume_from, progress, persistent_backup, pool_path, input_pipeline)
 
 
-def _train(config, index_path, data_root, weights_root, out, resume_from, progress, persistent_backup, pool_path=None):
+def _train(config, index_path, data_root, weights_root, out, resume_from, progress, persistent_backup, pool_path=None, input_pipeline=None):
+    loader_factory = make_loader if input_pipeline is None else input_pipeline.make_loader
+    if input_pipeline is not None:
+        write_json(out/'input_pipeline.json', input_pipeline.identity)
     progress.stage('seed_and_environment', announce=True)
     seed_everything(config.seed)
     environment = {'logging_version': LOGGING_VERSION, 'pid': os.getpid(), 'torch': str(torch.__version__),
@@ -473,7 +479,7 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         shutil.copy2(index_path,out/'clip_manifest.json')
     dev_records = index.records('dev', kind)
     progress.stage('initialize_dev_loader', announce=True)
-    dev_loader = make_loader(dev_records, data_root, config)
+    dev_loader = loader_factory(dev_records, data_root, config)
     progress.stage('initialize_cuda_model_optimizer', announce=True)
     if temporal:
         model,feature_source=trained_resnet(config,weights_root)
@@ -493,6 +499,9 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         progress.stage('validate_and_restore_checkpoint', announce=True)
         bundle = load_resume_bundle(resume_from, config, index_hash, pool_hash=pool_hash,protocol=protocol)
         state = bundle['state']
+        expected_pipeline = None if input_pipeline is None else input_pipeline.identity
+        if any(saved.get('input_pipeline') != expected_pipeline for saved in (state, bundle['best_state'])):
+            raise ValueError('Resume input preprocessing differs; face/full-frame checkpoints cannot be interchanged')
         if temporal and state.get('feature_source')!=feature_source:
             raise ValueError('Temporal resume requires the identical selected trained CNN and feature configuration')
         start = state['epoch'] + 1; best = state['best']; stale = state['stale']
@@ -535,7 +544,7 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         progress.stage('materialize_selected_records', announce=True)
         records = index.records('train','clip',ids) if temporal else cnn_records(index, pool, ids)
         progress.stage('initialize_train_loader', announce=True)
-        loader = make_loader(records, data_root, config, training=True, epoch=epoch)
+        loader = loader_factory(records, data_root, config, training=True, epoch=epoch)
         lrs = {g['name']: g['lr'] for g in optimizer.param_groups}
         train_metrics, _, train_seconds = run_epoch(model, loader, config, optimizer, scaler, progress=progress,
                                                   epoch=epoch, gradient_guard=gradient_guard)
@@ -567,7 +576,9 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
             'history': history, 'best': best, 'stale': stale, 'best_epoch': best_epoch,
             'best_balanced_dev_loss': best_balanced, 'numerics': gradient_guard.state_dict(),
             'inactive_amp_scaler_state': inactive_amp_scaler_state}
-        commit_epoch(out, history, entry, payload, improved, dev_records, predictions, report, config, progress, persistent_backup)
+        if input_pipeline is not None:
+            payload['input_pipeline'] = input_pipeline.identity
+        commit_epoch(out, history, entry, payload, improved, dev_records, predictions, report, config, progress, persistent_backup, input_pipeline)
         if stale >= config.patience:
             print(f'Early stopping: best {selection_label(config.checkpoint_selection)} {best:.6f} at epoch {best_epoch}', flush=True)
             break
@@ -610,10 +621,14 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
     write_json(out/'generalization_assessment.json', assessment)
     write_json(out / 'training_summary.json', {'status': status, 'model': config.model, 'epochs_run': len(history),
         'best_epoch': best_epoch, 'best_dev_video_roc_auc': report['video']['roc_auc'],
+        'best_dev_video_precision': report['video']['precision'], 'best_dev_video_recall': report['video']['recall'],
+        'best_dev_video_f1': report['video']['f1'], 'best_dev_video_f2': report['video']['f2'],
         'checkpoint_selection': config.checkpoint_selection, 'best_selection_score': best, 'best_balanced_dev_loss': best_balanced,
         'threshold': config.threshold, 'topk_fraction': config.topk_fraction, 'test_used': False,
         'overfitting_assessment': assessment})
     progress.stage('create_final_model_zip', announce=True)
+    if input_pipeline is not None:
+        input_pipeline.snapshot(out)
     final_zip = package_model_run(out, config.model, len(history), final=True, snapshot_lock=progress.lock)
     progress.note(f'Final {progress.model} download ZIP: {final_zip["archive"]}\nSHA256 {final_zip["sha256"]}')
     if persistent_backup is not None:

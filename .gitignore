@@ -5,6 +5,17 @@
 !/.gitignore
 !/README.md
 !/requirements.txt
+!/gradcam_dev_demo.py
+!/cnn_face_experiment/
+/cnn_face_experiment/*
+!/cnn_face_experiment/__init__.py
+!/cnn_face_experiment/crops.py
+!/cnn_face_experiment/preprocessing.py
+!/cnn_face_experiment/experiments.py
+!/cnn_face_experiment/reporting.py
+!/cnn_face_experiment/explain.py
+!/cnn_face_experiment/requirements.txt
+!/cnn_face_experiment/YUNET_LICENSE.txt
 
 !/cnn_experiment/
 /cnn_experiment/*
@@ -22,6 +33,8 @@
 !/cnn_experiment/pool.py
 !/cnn_experiment/temporal.py
 !/cnn_experiment/calibration.py
+!/cnn_experiment/gradcam.py
+!/cnn_experiment/reporting.py
 
 !/tests/
 /tests/*
@@ -35,11 +48,18 @@
 !/tests/test_fixed_pool.py
 !/tests/test_temporal.py
 !/tests/test_calibration.py
+!/tests/test_gradcam.py
+!/tests/test_face_experiment.py
+!/tests/test_reporting.py
+!/tests/test_face_preprocessing.py
+!/tests/test_face_finalization.py
 
 !/docs/
 /docs/*
-!/docs/VSCODE_KAGGLE_WORKFLOW.md
-!/docs/RETRAINING_AND_BACKUPS.md
+!/docs/KAGGLE_SETUP.md
+!/docs/EXPERIMENT_METHODOLOGY.md
+!/docs/GRADCAM.md
+!/docs/FACE_CNN_EXPERIMENTS.md
 
 # Defense in depth for generated files and credentials anywhere below allowed paths.
 *.ipynb
@@ -60,6 +80,7 @@
 *.ckpt
 *.safetensors
 *.onnx
+*.task
 *.h5
 *.hdf5
 *.npy
@@ -107,7 +128,8 @@ secrets.toml
 .DS_Store
 Thumbs.db
 
-# Explicitly approved reusable TRAIN/DEV metadata; no other generated inputs.
+# Explicitly approved reusable metadata in this public research repository.
+# Keep the existing database tracked and unchanged; all other generated indices stay ignored.
 !/metadata/
 /metadata/*
 !/metadata/candidates.sqlite

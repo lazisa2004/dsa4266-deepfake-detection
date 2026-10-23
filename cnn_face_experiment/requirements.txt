@@ -1,0 +1,5 @@
+# Keep the baseline torch/torchvision pair. Only the detector dependency is added.
+-r ../requirements.txt
+# Use ONE OpenCV distribution. Notebook setup removes other cv2 providers first.
+opencv-contrib-python==4.13.0.92
+mediapipe==0.10.32

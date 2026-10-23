@@ -24,7 +24,9 @@ OPTIONAL = ('numerics.jsonl', 'progress.jsonl', 'run_status.json', 'runtime_envi
             'best_dev_metrics.json', 'best_dev_predictions.csv', 'best_dev_curves.json',
             'best_dev_video_predictions.json', 'dev_threshold_analysis.json',
             'training_curves.png', 'numerical_curves.png', 'best_dev_confusion.png', 'best_dev_roc_pr.png',
-            'train_pool.json','clip_manifest.json','feature_source.json','dev_f2_calibration.json','dev_f2_reporting_confusion.png')
+            'train_pool.json','clip_manifest.json','feature_source.json','dev_f2_calibration.json','dev_f2_reporting_confusion.png',
+            'input_pipeline.json','face_boxes.sqlite','face_detection_report.json','face_detector.onnx','face_detector_LICENSE.txt',
+            'face_landmarker.task','video_dev_f2_calibration.json','controlled_experiment.json')
 
 
 def create_download_test(session):

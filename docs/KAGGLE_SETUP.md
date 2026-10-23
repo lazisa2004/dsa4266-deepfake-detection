@@ -16,17 +16,32 @@ interface; Python executes on the selected Kaggle remote Python3 kernel.
 5. Restart the remote kernel before source checkout if project modules are loaded.
    Section1 fetches main into a fresh /kaggle/working/dsa4266_source_* directory and
    records the actual commit. Missing new modules/tests stops clearly; there is
-   no fallback to stale codeeeee source. Pin the recorded approved commit for repeats.
-6. Follow [the exact section order and settings](RETRAINING_AND_BACKUPS.md#notebook-execution-and-manual-persistence).
+   no fallback to stale source. Pin the recorded approved commit for repeats.
+6. Follow [the exact section order and settings](EXPERIMENT_METHODOLOGY.md#notebook-execution-and-manual-persistence).
    Do NOT Run All. Only executing sections6,7 or11b starts the respective training.
 
-Kaggle cannot read the Windows linked folder. Local changes become available to
-the remote GitHub fetch only after an explicitly approved push. No push was made
-by this implementation. The source ZIP is for review; bootstrap uses GitHub.
+Kaggle cannot read the Windows linked folder. The local face notebook uses
+`USE_GITHUB_SOURCE=True` and the existing `GITHUB_REF` setting to pin the full
+approved commit. It fetches a fresh private checkout under `/kaggle/working` using
+Kaggle Secret `Github Token`. Keep `PREPROCESSING_MODE='face_mask'` and
+`RESUME_FROM={}` for the three independent new ImageNet-initialized experiments.
+The source ZIP is an optional alternative with `USE_GITHUB_SOURCE=False`.
+
+In `notebooks/experiment1_face_cnn.ipynb`, restart the remote Python3 kernel,
+execute setup and all preflight sections through the bounded GPU check, then run
+A (ResNet50 mask), B (EfficientNet-B0 mask), and C (EfficientNet-B0 full-frame,
+head LR2e-4) only when ready. Use Kaggle T4 and the existing video, metadata and
+weights inputs. Setup selects only `opencv-contrib-python==4.13.0.92`; other cv2
+providers are removed before installation in a fresh kernel. Existing NumPy and
+CUDA torch/torchvision are preserved. Do not run the protected TEST section.
 
 Section3 consumes only existing DEV from SQLite and creates/reuses the immutable
-TRAIN pool separately. Save its small manifest ZIP, then reattach train_pool.json
-in future sessions to avoid repeat auditing. LSTM has its own portable clip manifest.
+TRAIN pool separately. A separate train_pool.json dataset is optional: the face
+notebook first reuses the exact manifest from an attached file or completed CNN ZIP,
+then falls back to the original deterministic TRAIN builder with PoolConfig(seed=4266).
+Every path must match SHA256
+8bcb5c9845f92b43e36213f22e410bcecedf983f7db87250f02a9968868eea92;
+otherwise setup stops before training. LSTM has its own portable clip manifest.
 Neither manifest replaces the original video input: videos remain required for
 lazy decoding. Source video sizes/metadata and exact PTS are checked.
 

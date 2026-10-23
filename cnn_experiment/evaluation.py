@@ -88,6 +88,26 @@ def binary_metrics(labels,scores,threshold=0.5):
             'confusion_matrix':[[tn,fp],[fn,tp]]}
 
 
+def metrics_with_f2(metrics):
+    """Non-mutating legacy enrichment; use only this metric set's actual counts/P/R."""
+    result = dict(metrics or {})
+    if result.get('f2') is not None:
+        return result
+    if all(result.get(k) is not None for k in ('tp', 'fp', 'fn')):
+        tp, fp, fn = (result[k] for k in ('tp', 'fp', 'fn'))
+        denominator = 5*tp+fp+4*fn
+        result['f2'] = 5*tp/denominator if denominator else 0.
+    elif result.get('confusion_matrix') is not None:
+        (_, fp), (fn, tp) = result['confusion_matrix']
+        denominator = 5*tp+fp+4*fn
+        result['f2'] = 5*tp/denominator if denominator else 0.
+    elif all(result.get(k) is not None for k in ('precision', 'recall')):
+        precision, recall = result['precision'], result['recall']
+        denominator = 4*precision+recall
+        result['f2'] = 5*precision*recall/denominator if denominator else 0.
+    return result
+
+
 def video_predictions(records, predictions, policy):
     """Aggregate all scheduled predictions, including boundary/ambiguous samples."""
     from collections import defaultdict
@@ -214,6 +234,8 @@ def flatten(value, prefix=''):
 def write_history_metrics(out, history):
     """Persist the logically appended history before any figure rendering."""
     out = Path(out)
+    # Enrich only the newly written copy, never mutate restored checkpoint history.
+    history = [dict(row, **{key: metrics_with_f2(row[key]) for key in ('train', 'dev', 'dev_video') if key in row}) for row in history]
     json_tmp = out/'history.jsonl.tmp'
     json_tmp.write_text(''.join(json.dumps(r, allow_nan=False) + '\n' for r in history), encoding='utf-8')
     json_tmp.replace(out/'history.jsonl')
@@ -394,6 +416,7 @@ def comparison_table(runs, output, selection_metric='video_roc_auc'):
     for row in rows:
         run = Path(row['run'])
         metrics = json.loads((run/'best_dev_metrics.json').read_text(encoding='utf-8'))
+        metrics = dict(metrics, unit=metrics_with_f2(metrics['unit']), video=metrics_with_f2(metrics['video']))
         losses = metrics['losses']
         row.update(dev_loss=losses['loss'], real_dev_loss=losses['real_class_loss'],
                    fake_dev_loss=losses['fake_class_loss'],dev_video_pr_auc=metrics['video'].get('pr_auc'))
@@ -405,6 +428,12 @@ def comparison_table(runs, output, selection_metric='video_roc_auc'):
         for level, key in (('frame', 'unit'), ('video', 'video')):
             for metric in ('precision', 'recall', 'f1','f2'):
                 row[f'dev_{level}_{metric}'] = metrics[key].get(metric)
+    # Presentation order only; winner and selection policy were determined above.
+    leading = ['model', 'status', 'best_epoch', 'dev_frame_pr_auc', 'dev_frame_roc_auc',
+        'dev_video_roc_auc', 'dev_video_pr_auc', 'dev_frame_precision', 'dev_frame_recall',
+        'dev_frame_f1', 'dev_frame_f2', 'dev_video_precision', 'dev_video_recall',
+        'dev_video_f1', 'dev_video_f2', 'dev_loss']
+    rows = [{key: row.get(key) for key in leading} | {key: value for key, value in row.items() if key not in leading} for row in rows]
     with (output/'model_comparison.csv').open('w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader(); writer.writerows(rows)
