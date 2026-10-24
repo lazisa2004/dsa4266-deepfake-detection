@@ -6,6 +6,14 @@
 !/README.md
 !/requirements.txt
 !/gradcam_dev_demo.py
+!/model_family_plan/
+/model_family_plan/*
+!/model_family_plan/__init__.py
+!/model_family_plan/plan.py
+!/model_family_plan/runner.py
+!/model_family_plan/comparison.py
+!/model_family_plan/interpretability.py
+!/model_family_plan/README.md
 !/experiment_f/
 /experiment_f/*
 !/experiment_f/__init__.py
@@ -61,6 +69,8 @@
 !/tests/test_face_preprocessing.py
 !/tests/test_face_finalization.py
 !/tests/test_roc_experiments.py
+!/tests/test_model_family_plan.py
+!/tests/test_model_family_comparison.py
 
 !/docs/
 /docs/*

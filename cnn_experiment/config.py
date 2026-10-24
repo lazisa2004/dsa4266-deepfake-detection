@@ -109,13 +109,14 @@ def selection_label(selection):
     return {'video_roc_auc': 'DEV video ROC-AUC, fixed Top-5%',
             'frame_pr_auc': 'DEV frame PR-AUC (trapezoidal)',
             'frame_roc_auc': 'DEV frame ROC-AUC',
+            'clip_roc_auc': 'DEV clip ROC-AUC',
             'clip_pr_auc':'DEV clip PR-AUC (trapezoidal)'}[selection]
 
 
 def checkpoint_score(report, selection):
     selection_label(selection)
     value = (report['video']['roc_auc'] if selection == 'video_roc_auc' else
-             report['unit']['roc_auc'] if selection == 'frame_roc_auc' else report['unit']['pr_auc'])
+             report['unit']['roc_auc'] if selection in ('frame_roc_auc', 'clip_roc_auc') else report['unit']['pr_auc'])
     if value is None or not math.isfinite(value):
         raise ValueError('Checkpoint-selection score is undefined/non-finite')
     return value

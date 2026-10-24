@@ -37,9 +37,9 @@ class TemporalConfig(Config):
         values.update(model='resnet50',training_pool='legacy_full_index',checkpoint_selection='frame_pr_auc',warmup_epochs=1)
         Config(**values).validate()
         if (self.model!='resnet50_lstm' or self.training_pool!='temporal_clips' or
-            self.checkpoint_selection!='clip_pr_auc' or self.warmup_epochs!=0 or self.finetune_final_stage or
+            self.checkpoint_selection not in ('clip_pr_auc','clip_roc_auc') or self.warmup_epochs!=0 or self.finetune_final_stage or
             min(self.hidden_size,self.lstm_layers,self.feature_microbatch)<1):
-            raise ValueError('Initial temporal protocol requires frozen ResNet50 and predeclared clip PR-AUC')
+            raise ValueError('Temporal protocol requires frozen ResNet50 and predeclared clip PR/ROC-AUC')
         return self
 
 

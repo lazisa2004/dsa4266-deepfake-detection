@@ -560,7 +560,7 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         elif epoch >= config.warmup_epochs:
             stale += 1
         if epoch >= config.warmup_epochs:
-            scheduler.step(score if temporal else report['video']['roc_auc'])
+            scheduler.step(report['unit']['pr_auc'] if temporal else report['video']['roc_auc'])
         entry = {'epoch': epoch+1, 'train': train_metrics, 'dev': dev_metrics, 'dev_video': report['video'],
             'sampling': diagnostic, 'learning_rates': lrs, 'train_seconds': train_seconds, 'dev_seconds': dev_seconds,
             'phase': model.phase, 'trainable_parameters': phase['trainable_parameters'],
@@ -594,7 +594,7 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
     progress.stage('final_prediction_artifacts', announce=True)
     prediction_artifacts(out, dev_records, predictions, report,unit_label=kind.title())
     progress.stage('final_plots_and_dev_threshold_analysis', announce=True)
-    if config.checkpoint_selection == 'frame_roc_auc':
+    if config.checkpoint_selection in ('frame_roc_auc', 'clip_roc_auc'):
         plot_history(out, history, unit_label=kind.title(), best_epoch=best_epoch,
                      selection_metric=config.checkpoint_selection)
     else:
@@ -630,7 +630,7 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         'checkpoint_selection': config.checkpoint_selection, 'best_selection_score': best, 'best_balanced_dev_loss': best_balanced,
         'threshold': config.threshold, 'topk_fraction': config.topk_fraction, 'test_used': False,
         'overfitting_assessment': assessment})
-    if config.checkpoint_selection == 'frame_roc_auc':
+    if config.checkpoint_selection in ('frame_roc_auc', 'clip_roc_auc'):
         from .reporting import export_epoch_report
         progress.stage('save_cumulative_epoch_table', announce=True)
         export_epoch_report(out, out, kind=kind,

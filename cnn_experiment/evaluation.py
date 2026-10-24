@@ -265,9 +265,9 @@ def plot_history(out, history,unit_label='Frame', *, best_epoch=None, selection_
     axes[0, 2].plot(epochs, [r['dev'].get('pr_auc') for r in history], label='DEV '+unit_label.lower()+' PR-AUC')
     axes[1, 2].plot(epochs, [r['dev'].get('precision') for r in history], label='DEV precision at 0.5')
     axes[1, 2].plot(epochs, [r['dev'].get('recall') for r in history], label='DEV recall at 0.5')
-    if selection_metric == 'frame_roc_auc':
+    if selection_metric in ('frame_roc_auc', 'clip_roc_auc'):
         if best_epoch not in epochs:
-            raise ValueError('D/E graphs require the saved selected epoch in the completed history')
+            raise ValueError('ROC-selected graphs require the saved selected epoch in the completed history')
         # D/E keep the original six-panel layout and curves; add the requested
         # video PR-AUC and classification lines without changing legacy plots.
         axes[0, 2].plot(epochs, [r['dev_video'].get('pr_auc') for r in history], label='DEV video PR-AUC')
@@ -278,7 +278,8 @@ def plot_history(out, history,unit_label='Frame', *, best_epoch=None, selection_
                                 label=f'DEV {prefix} {key.upper()} at 0.5')
         for ax in axes.flat:
             ax.axvline(best_epoch, color='#d4a000', linestyle='--', label=f'Selected epoch {best_epoch}')
-        fig.suptitle(f'Selected by DEV frame ROC-AUC | best epoch {best_epoch}')
+        level = 'clip' if selection_metric == 'clip_roc_auc' else 'frame'
+        fig.suptitle(f'Selected by DEV {level} ROC-AUC | best epoch {best_epoch}')
     for i, (ax, title) in enumerate(zip(axes.flat, ('BCE loss', 'Class-aware DEV BCE', 'Frame PR-AUC',
                                                    'Frame ROC-AUC', 'Video ROC-AUC', 'Frame precision / recall'))):
         ax.set_title(title.replace('Frame',unit_label)); ax.set_xlabel('Epoch'); ax.legend(); ax.grid(alpha=.2)
@@ -358,7 +359,7 @@ def compare_runs(runs, output, selection_metric='video_roc_auc'):
     with (output / 'model_comparison.csv').open('w', newline='', encoding='utf-8') as h:
         writer = csv.DictWriter(h, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
     score_key = ('dev_video_roc_auc' if selection_metric == 'video_roc_auc' else
-                 'dev_frame_roc_auc' if selection_metric == 'frame_roc_auc' else 'dev_frame_pr_auc')
+                 'dev_frame_roc_auc' if selection_metric in ('frame_roc_auc','clip_roc_auc') else 'dev_frame_pr_auc')
     winner = max(rows, key=lambda r: (r[score_key], -r['balanced_dev_loss']))
     write_json(output / 'comparison.json', {'selection': selection_label(selection_metric)+'; balanced DEV loss breaks ties',
         'selection_metric': selection_metric,
