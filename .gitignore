@@ -6,6 +6,12 @@
 !/README.md
 !/requirements.txt
 !/gradcam_dev_demo.py
+!/experiment_f/
+/experiment_f/*
+!/experiment_f/__init__.py
+!/experiment_f/runner.py
+!/experiment_f/test_runner.py
+!/experiment_f/README.md
 !/cnn_face_experiment/
 /cnn_face_experiment/*
 !/cnn_face_experiment/__init__.py
