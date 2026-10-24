@@ -40,8 +40,8 @@ class Config:
             raise ValueError('Unknown CNN training-pool protocol')
         if self.training_pool=='fixed20k' and self.train_per_class!=4000:
             raise ValueError('Fixed-pool CNN epochs require 4,000 per class')
-        if self.checkpoint_selection not in ('video_roc_auc', 'frame_pr_auc'):
-            raise ValueError('Checkpoint selection must be video_roc_auc or frame_pr_auc')
+        if self.checkpoint_selection not in ('video_roc_auc', 'frame_pr_auc', 'frame_roc_auc'):
+            raise ValueError('Checkpoint selection must be video_roc_auc, frame_pr_auc or frame_roc_auc')
         if self.model not in ('resnet50', 'efficientnet_b0'):
             raise ValueError('This stage trains CNNs only')
         if not 1 <= self.warmup_epochs < self.epochs:
@@ -108,12 +108,14 @@ def experiment_config(model, profile='baseline', amp=True, checkpoint_selection=
 def selection_label(selection):
     return {'video_roc_auc': 'DEV video ROC-AUC, fixed Top-5%',
             'frame_pr_auc': 'DEV frame PR-AUC (trapezoidal)',
+            'frame_roc_auc': 'DEV frame ROC-AUC',
             'clip_pr_auc':'DEV clip PR-AUC (trapezoidal)'}[selection]
 
 
 def checkpoint_score(report, selection):
     selection_label(selection)
-    value = report['video']['roc_auc'] if selection == 'video_roc_auc' else report['unit']['pr_auc']
+    value = (report['video']['roc_auc'] if selection == 'video_roc_auc' else
+             report['unit']['roc_auc'] if selection == 'frame_roc_auc' else report['unit']['pr_auc'])
     if value is None or not math.isfinite(value):
         raise ValueError('Checkpoint-selection score is undefined/non-finite')
     return value

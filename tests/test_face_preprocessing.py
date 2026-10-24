@@ -220,7 +220,10 @@ class FacePreprocessingTests(unittest.TestCase):
         self.assertIn("record['split'] == 'train'", source)
         self.assertIn('preprocessing_previews(MATCHED_TRAIN_RECORDS', source)
         self.assertIn('PIPELINE = CROP_PIPELINE if', source)
-        self.assertEqual(len(notebook['cells']), 23)
+        self.assertGreaterEqual(len(notebook['cells']), 23)
+        self.assertEqual([cell['id'] for cell in notebook['cells'][:23]],
+                         ['face-cnn-%02d' % i for i in range(23)])
+        self.assertTrue(all(cell['id'].startswith('roc-de-') for cell in notebook['cells'][23:]))
         for cell in notebook['cells']:
             if cell['cell_type'] == 'code': compile(''.join(cell['source']), str(path), 'exec')
 

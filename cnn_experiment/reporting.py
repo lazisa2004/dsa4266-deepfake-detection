@@ -311,14 +311,27 @@ def display_comparison(runs, *, face_mode='face_mask'):
     return rows
 
 
-def export_epoch_report(source, destination, *, kind=None):
-    """Export enriched historical CSV/JSON/HTML into a NEW folder; never overwrite a run."""
+def export_epoch_report(source, destination, *, kind=None, checkpoint_selection=None, in_run=False):
+    """Export a NEW report, optionally as new flat files in its completed run."""
     destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=False)
+    if in_run:
+        if destination.resolve() != Path(source).resolve() or not destination.is_dir():
+            raise ValueError('Flat run reports must stay inside their own existing source run')
+        if any((destination/name).exists() for name in ('epoch_metrics.csv','epoch_metrics.json','epoch_metrics.html')):
+            raise FileExistsError('Existing cumulative reports preserved')
+    else:
+        destination.mkdir(parents=True, exist_ok=False)
     rows, selected, native_kind = epoch_table(source, kind=kind)
     with (destination/'epoch_metrics.csv').open('w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else ['Epoch']); writer.writeheader(); writer.writerows(rows)
-    (destination/'epoch_metrics.json').write_text(json.dumps({'rows': rows, 'selected_epoch': selected, 'level': native_kind,
-        'threshold': .5, 'missing_values': 'null / N/A; never fabricated'}, indent=2, allow_nan=False), encoding='utf-8')
-    (destination/'epoch_metrics.html').write_text(table_html(rows), encoding='utf-8')
+    metadata = {'rows': rows, 'selected_epoch': selected, 'level': native_kind,
+                'threshold': .5, 'missing_values': 'null / N/A; never fabricated'}
+    title = 'Completed epoch DEV metrics (threshold 0.5)'
+    if checkpoint_selection is not None:
+        from .config import selection_label
+        metadata['checkpoint_selection'] = checkpoint_selection
+        metadata['selection_label'] = selection_label(checkpoint_selection)
+        title += ' | selected by '+selection_label(checkpoint_selection)
+    (destination/'epoch_metrics.json').write_text(json.dumps(metadata, indent=2, allow_nan=False), encoding='utf-8')
+    (destination/'epoch_metrics.html').write_text(table_html(rows, title=title), encoding='utf-8')
     return destination

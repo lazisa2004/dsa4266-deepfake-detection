@@ -157,7 +157,7 @@ def preview_records(dev_records, pool_path, count_each=6):
     return spaced(train)+spaced(dev_records)
 
 
-def bounded_preflight(configs, records, data_root, weights_root, pipeline, output, device='cuda'):
+def bounded_preflight(configs, records, data_root, weights_root, pipeline, output, device='cuda', *, face_inputs=None):
     """Finite forward/backward checks with NO optimizer/scaler steps or production weights."""
     from cnn_experiment.training import seed_everything
     output = Path(output); output.mkdir(parents=True, exist_ok=False)
@@ -167,7 +167,7 @@ def bounded_preflight(configs, records, data_root, weights_root, pipeline, outpu
     for name, config in configs.items():
         seed_everything(config.seed)
         cfg = replace(config, workers=0, batch_size=2)
-        cropped = EXPERIMENTS[name][1]
+        cropped = EXPERIMENTS[name][1] if face_inputs is None else face_inputs[name]
         loader_factory = pipeline.make_loader if cropped else make_loader
         start = time.perf_counter()
         loader = loader_factory(records, data_root, cfg)

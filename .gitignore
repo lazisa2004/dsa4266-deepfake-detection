@@ -12,6 +12,7 @@
 !/cnn_face_experiment/crops.py
 !/cnn_face_experiment/preprocessing.py
 !/cnn_face_experiment/experiments.py
+!/cnn_face_experiment/roc_experiments.py
 !/cnn_face_experiment/reporting.py
 !/cnn_face_experiment/explain.py
 !/cnn_face_experiment/requirements.txt
@@ -53,6 +54,7 @@
 !/tests/test_reporting.py
 !/tests/test_face_preprocessing.py
 !/tests/test_face_finalization.py
+!/tests/test_roc_experiments.py
 
 !/docs/
 /docs/*

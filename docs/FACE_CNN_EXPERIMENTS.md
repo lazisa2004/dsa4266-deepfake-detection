@@ -497,3 +497,51 @@ reviewed saved masks. No mask/crop policy or model asset changed. Kaggle/Linux T
 still requires the automatic notebook preflight: a Windows CPU check cannot
 establish CUDA or Linux system-library compatibility. If an OpenCV shared library
 cannot import, setup fails before training; do not install a second cv2 provider.
+
+
+## Additive D/E recipes (approved release; training remains explicit)
+
+The face notebook retains all23 original cells unchanged and appends separate
+D/E setup, explicit training and saved-report replay cells. The original CNN/LSTM
+notebook, executed outputs, A/B/C cells and six-model comparison are untouched.
+
+| Experiment | Input / architecture | Head LR | Backbone LR | Epoch cap | Patience | Checkpoint / early-stopping selection |
+|---|---|---:|---:|---:|---:|---|
+| D | Face mask / EfficientNet-B0 | 1e-4 | 5e-5 | 15 | 5 | DEV frame ROC-AUC |
+| E | Face mask / ResNet50 | 5e-5 | 1.5e-5 | 15 | 5 | DEV frame ROC-AUC |
+
+`cnn_face_experiment.roc_experiments.roc_experiment_configurations` derives only
+these explicitly changed fields from the corresponding A/B recipe. New run IDs
+are `efficientnet_b0_face_mask_roc_d` and `resnet50_face_mask_roc_e`, under a separate
+`roc_de_<unique>/` session. Both use original independent ImageNet initialization.
+Original PR-selected models retain their recorded best epochs and selection rules;
+changing the selector is not permitted during checkpoint resume. Earlier historical
+video-ROC-selected runs also retain their original selection identity.
+
+The shared scheduler still monitors DEV video ROC-AUC. Original patience semantics
+and two-epoch warm-up are unchanged; checkpoint/early-stop scores now read frame
+ROC-AUC for D/E only. Fixed20k TRAIN pool, seed4266, 4k/class/epoch, full fixed DEV,
+10 FPS, labels, masks, AMP, freezing, dropout, optimizer and weight decay are unchanged.
+
+Each completed D/E run displays the existing19-column cumulative table once, with
+the existing yellow selected-best row, followed by the original graph order. The
+six-panel training plot keeps its original layout and curves; D/E also show video
+PR-AUC and frame/video precision/recall/F1/F2, plus yellow dashed selected-epoch
+markers labelled DEV frame ROC-AUC. Existing recipes use their original rendering.
+All completed epochs remain in history after early stopping.
+
+D/E write `epoch_metrics.csv`, `epoch_metrics.json` and `epoch_metrics.html` at the
+new run root. These tables, histories, original plots, best/last checkpoints and
+DEV prediction artifacts are included in the final flat ZIP and use the existing
+verified restore function. Reporting reads saved results without retraining or
+reselecting old checkpoints. It uses classification threshold0.5 and unchanged
+Top-5% mean video pooling; DEV-calibrated analysis remains separately labelled.
+
+Use the local notebook's existing `GITHUB_REF` setting, pinned to the approved
+D/E release commit, and `USE_GITHUB_SOURCE=True`. Restart the remote kernel, run
+sections1-5, skip completed A/B/C training cells, then run section9 D/E setup and
+its automatic bounded preflight. Execute Experiment D and Experiment E separately
+only when ready to train. The setup rejects an old source checkout rather than
+silently substituting A/B/C configurations. This release does not train models
+or access TEST. Checkpoint selection/early stopping monitor DEV frame ROC-AUC;
+the LR scheduler continues to monitor DEV video ROC-AUC unchanged.

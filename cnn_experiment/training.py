@@ -594,7 +594,11 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
     progress.stage('final_prediction_artifacts', announce=True)
     prediction_artifacts(out, dev_records, predictions, report,unit_label=kind.title())
     progress.stage('final_plots_and_dev_threshold_analysis', announce=True)
-    plot_history(out, history,unit_label=kind.title())
+    if config.checkpoint_selection == 'frame_roc_auc':
+        plot_history(out, history, unit_label=kind.title(), best_epoch=best_epoch,
+                     selection_metric=config.checkpoint_selection)
+    else:
+        plot_history(out, history,unit_label=kind.title())
     write_final_numerics(out, history)
     from .calibration import save_calibration
     calibration=save_calibration(out,dev_records,predictions,config.seed)
@@ -626,6 +630,11 @@ def _train(config, index_path, data_root, weights_root, out, resume_from, progre
         'checkpoint_selection': config.checkpoint_selection, 'best_selection_score': best, 'best_balanced_dev_loss': best_balanced,
         'threshold': config.threshold, 'topk_fraction': config.topk_fraction, 'test_used': False,
         'overfitting_assessment': assessment})
+    if config.checkpoint_selection == 'frame_roc_auc':
+        from .reporting import export_epoch_report
+        progress.stage('save_cumulative_epoch_table', announce=True)
+        export_epoch_report(out, out, kind=kind,
+                            checkpoint_selection=config.checkpoint_selection, in_run=True)
     progress.stage('create_final_model_zip', announce=True)
     if input_pipeline is not None:
         input_pipeline.snapshot(out)

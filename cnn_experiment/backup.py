@@ -26,7 +26,8 @@ OPTIONAL = ('numerics.jsonl', 'progress.jsonl', 'run_status.json', 'runtime_envi
             'training_curves.png', 'numerical_curves.png', 'best_dev_confusion.png', 'best_dev_roc_pr.png',
             'train_pool.json','clip_manifest.json','feature_source.json','dev_f2_calibration.json','dev_f2_reporting_confusion.png',
             'input_pipeline.json','face_boxes.sqlite','face_detection_report.json','face_detector.onnx','face_detector_LICENSE.txt',
-            'face_landmarker.task','video_dev_f2_calibration.json','controlled_experiment.json')
+            'face_landmarker.task','video_dev_f2_calibration.json','controlled_experiment.json',
+            'epoch_metrics.csv','epoch_metrics.json','epoch_metrics.html')
 
 
 def create_download_test(session):
